@@ -1,0 +1,30 @@
+{
+  "name": "websideapi",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@syncfusion/ej2-excel-export": "^32.1.19",
+    "@syncfusion/ej2-file-utils": "^32.1.19",
+    "@syncfusion/ej2-spreadsheet": "^32.1.21",
+    "cors": "^2.8.5",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "google-auth-library": "^10.9.0",
+    "mongoose": "^9.7.1",
+    "mssql": "^12.5.5",
+    "multer": "^2.0.2",
+    "odbc": "^2.5.0",
+    "ws": "^8.21.0",
+    "xlsx": "^0.18.5",
+    "xlsx-js-style": "^1.2.0",
+    "y-websocket": "^3.0.0",
+    "yjs": "^13.6.31"
+  }
+}

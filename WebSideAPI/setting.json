@@ -1,0 +1,51 @@
+{
+  "templateId": "FORECAST_TEMPLATE_V1",
+  "templateName": "工廠需求預測明細範本",
+  "templateDescription": "此範本用於解析包含橫向動態週別/月份的時間序列預測報表。",
+  "filePath": "uploads/file-1719321600000.xlsx",
+  "dbSettings": {
+    "host": "127.0.0.1",
+    "user": "sa"
+  },
+  "targetTable": "dbo.factory_demand_forecast",
+  "dataStartRow": 1,
+  "worksheetConfig": {
+    "selectType": "index",
+    "value": "1"
+  },
+  "mappingFields": [
+    {
+      "excelCol": "A",
+      "excelHeader": "CM",
+      "dbCol": "cm",
+      "type": "nvarchar",
+      "length": 100,
+      "allowNull": true
+    },
+    {
+      "excelCol": "B",
+      "excelHeader": "Application",
+      "dbCol": "application",
+      "type": "nvarchar",
+      "length": 250,
+      "allowNull": true
+    }
+  ],
+  "matrixConfig": {
+    "startColumn": "Z",
+    "endColumn": "AH",
+    "yearAxis": {
+      "rowNum": 1,
+      "dbCol": "fiscal_year"
+    },
+    "itemAxis": {
+      "rowNum": 1,
+      "dbCol": "forecast_item"
+    },
+    "valueAxis": {
+      "dbCol": "forecast_value"
+    },
+    "excludeHeaders": ["TTL", "合計"]
+  },
+  "updatedAt": "2026-06-25T08:51:00.000Z"
+}

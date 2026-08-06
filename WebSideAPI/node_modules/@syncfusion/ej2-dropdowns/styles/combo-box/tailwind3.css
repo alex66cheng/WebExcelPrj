@@ -1,0 +1,171 @@
+
+
+
+
+
+
+
+
+/* Font Family */
+/* border */
+/* 0px */
+/* 1px */
+/* 1.5px */
+/* 2px */
+/* 3px */
+/* 4px */
+/* 5px */
+/* 6px */
+/* 7px */
+/* 8px */
+/* Radius */
+/* 1px */
+/* 2px */
+/* 3px */
+/* 4px */
+/* 5px */
+/* 6px */
+/* 7px */
+/* 8px */
+/* 9px */
+/* 10px */
+/* 11px */
+/* 12px */
+/* 13px */
+/* 14px */
+/* 15px */
+/* 16px */
+/* 17px */
+/* 18px */
+/* 19px */
+/* 20px */
+/* 21px */
+/* 22px */
+/* 23px */
+/* 24px */
+/* 25px */
+/* 26px */
+/* 27px */
+/* 28px */
+/* 29px */
+/* 30px */
+/* 31px */
+/* 32px */
+/* 33px */
+/* 34px */
+/* 35px */
+/* 36px */
+/* 37px */
+/* 38px */
+/* 39px */
+/* 40px */
+/* 41px */
+/* 42px */
+/* 43px */
+/* 44px */
+/* 45px */
+/* 46px */
+/* 47px */
+/* 48px */
+/* 49px */
+/* 50px */
+/* 5em */
+
+
+.e-popup.e-ddl {
+  border-radius: calc(var(--e-radius) * 0.25);
+  -webkit-box-shadow: none;
+          box-shadow: none;
+  margin-top: 3px;
+}
+.e-popup.e-ddl .e-input-group {
+  width: auto;
+}
+.e-popup.e-ddl .e-input-group input {
+  line-height: 15px;
+}
+
+.e-popup.e-ddl .e-dropdownbase {
+  min-height: 26px;
+}
+
+.e-popup.e-ddl .e-filter-parent .e-input-group {
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  width: auto;
+}
+.e-popup.e-ddl .e-filter-parent .e-input-group .e-back-icon {
+  border: 0;
+}
+
+.e-input-group.e-control-wrapper.e-ddl .e-input[readonly],
+.e-float-input.e-control-wrapper.e-ddl input[readonly] {
+  background: transparent;
+}
+
+.e-input-group.e-control-wrapper.e-ddl.e-readonly .e-input[readonly],
+.e-float-input.e-control-wrapper.e-ddl.e-readonly input[readonly] {
+  background: var(--color-sf-content-bg-color-alt2);
+}
+
+.e-input-group:not(.e-disabled) .e-control.e-dropdownlist ~ .e-ddl-icon:active,
+.e-input-group:not(.e-disabled) .e-control.e-dropdownlist ~ .e-ddl-icon:hover,
+.e-control.e-dropdownlist .e-input-group:not(.e-disabled) .e-ddl-icon:active,
+.e-control.e-dropdownlist .e-input-group:not(.e-disabled) .e-ddl-icon:hover,
+.e-ddl.e-popup .e-input-group:not(.e-disabled) .e-clear-icon:active,
+.e-ddl.e-popup .e-input-group:not(.e-disabled) .e-clear-icon:hover,
+.e-ddl.e-popup .e-input-group:not(.e-disabled) .e-back-icon:active,
+.e-ddl.e-popup .e-input-group:not(.e-disabled) .e-back-icon:hover {
+  background: transparent;
+  color: var(--color-sf-icon-color);
+}
+
+.e-input-group.e-ddl .e-input[readonly] ~ span.e-input-group-icon.e-ddl-icon,
+.e-input-group.e-control-wrapper.e-ddl .e-input[readonly] ~ span.e-input-group-icon.e-ddl-icon,
+.e-float-input.e-ddl input[readonly] ~ span.e-input-group-icon.e-ddl-icon,
+.e-float-input.e-control-wrapper.e-ddl input[readonly] ~ span.e-input-group-icon.e-ddl-icon {
+  background: transparent;
+  color: var(--color-sf-icon-color);
+}
+
+.e-input-group.e-ddl.e-readonly .e-input[readonly] ~ span.e-input-group-icon.e-ddl-icon.e-search-icon,
+.e-input-group.e-control-wrapper.e-readonly .e-input[readonly] ~ span.e-input-group-icon.e-ddl-icon.e-search-icon,
+.e-float-input.e-ddl.e-readonly .e-input[readonly] ~ span.e-input-group-icon.e-ddl-icon.e-search-icon,
+.e-float-input.e-control-wrapper.e-ddl.e-readonly .e-input[readonly] ~ span.e-input-group-icon.e-ddl-icon.e-search-icon {
+  background: var(--color-sf-content-bg-color-alt2);
+}
+
+.e-input-group:not(.e-disabled) .e-control.e-dropdownlist ~ .e-ddl-icon,
+.e-input-group.e-disabled.e-ddl .e-control.e-dropdownlist ~ .e-input-group-icon,
+.e-control.e-dropdownlist .e-input-group.e-disabled.e-ddl .e-input-group-icon,
+.e-control.e-dropdownlist .e-input-group.e-ddl .e-input-group-icon {
+  border: 0;
+}
+
+.e-input-group:not(.e-disabled) .e-control.e-dropdownlist ~ .e-input-group-icon:active,
+.e-control.e-dropdownlist .e-input-group:not(.e-disabled) .e-input-group-icon:active,
+.e-ddl.e-popup .e-input-group:not(.e-disabled) .e-back-icon:active,
+.e-ddl.e-popup .e-input-group:not(.e-disabled) .e-clear-icon:active {
+  -webkit-box-shadow: none;
+          box-shadow: none;
+}
+
+.e-ddl.e-popup .e-input-group:not(.e-disabled) .e-clear-icon {
+  background: transparent;
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  position: relative;
+}
+
+.e-ddl.e-popup .e-filter-parent .e-input-group,
+.e-ddl.e-popup .e-filter-parent {
+  background: var(--color-sf-content-bg-color);
+}
+
+.e-input-group .e-control.e-dropdownlist ~ .e-ddl-icon {
+  font-size: 14px;
+}
+
+/* stylelint-disable-line no-empty-source */

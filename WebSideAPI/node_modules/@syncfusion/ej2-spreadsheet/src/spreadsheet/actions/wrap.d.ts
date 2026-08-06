@@ -1,0 +1,35 @@
+import { Spreadsheet } from '../base/spreadsheet';
+/**
+ * Represents Wrap Text support for Spreadsheet.
+ */
+export declare class WrapText {
+    private parent;
+    private wrapCell;
+    /**
+     * Constructor for the Spreadsheet Wrap Text module.
+     *
+     * @param {Spreadsheet} parent - Specifies the Spreadsheet.
+     * @private
+     */
+    constructor(parent: Spreadsheet);
+    private addEventListener;
+    private removeEventListener;
+    private wrapTextHandler;
+    private ribbonClickHandler;
+    private rowHeightChangedHandler;
+    private colWidthChanged;
+    private updateWrapCell;
+    /**
+     * For internal use only - Get the module name.
+     *
+     * @returns {string} - Get the module name.
+     * @private
+     */
+    protected getModuleName(): string;
+    /**
+     * Removes the added event handlers and clears the internal properties of WrapText module.
+     *
+     * @returns {void}
+     */
+    destroy(): void;
+}

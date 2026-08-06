@@ -1,0 +1,28 @@
+@use 'ej2-base/styles/common/mixin' as *;
+@include export-module('spreadsheet-ribbon-bootstrap5-icons') {
+  .e-spreadsheet .e-ribbon {
+    & .e-drop-icon {
+      &::before {
+        content: '\e729';
+      }
+    }
+
+    & .e-menu-wrapper.e-file-menu ul .e-menu-item .e-caret {
+      &::before {
+        content: '\e729';
+      }
+    }
+  }
+  
+  .e-spreadsheet.sf-spreadsheet {
+    & .e-spreadsheet-ribbon {
+      & .e-btn.e-split-btn {
+        & .e-clear-icon {
+          &::before {
+            content: '\e7cc';
+          }
+        }
+      }
+    }
+  }
+}

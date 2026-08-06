@@ -1,0 +1,14 @@
+@use 'ej2-base/styles/definition/bootstrap4' as *;
+@forward 'ej2-base/styles/definition/bootstrap4';
+
+//default
+
+.e-input-group.e-ddl .e-control.e-combobox ~ .e-ddl-icon {
+  font-size: 8px;
+}
+
+.e-bigger .e-input-group.e-ddl .e-control.e-combobox ~ .e-ddl-icon {
+  font-size: 10px;
+}
+
+//enddefault
