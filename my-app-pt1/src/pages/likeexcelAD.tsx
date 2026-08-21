@@ -2,11 +2,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import '@syncfusion/ej2-react-buttons';
-import { 
-  SpreadsheetComponent, SheetsDirective, SheetDirective, 
-  RowsDirective, RowDirective, CellsDirective, CellDirective,
-  Inject
-} from '@syncfusion/ej2-react-spreadsheet';
+import { SpreadsheetComponent } from '@syncfusion/ej2-react-spreadsheet';
+import { useWorkbook } from '../hooks/useWorkbook';
 
 import '@syncfusion/ej2-base/styles/material.css';
 import '@syncfusion/ej2-inputs/styles/material.css';
@@ -23,6 +20,7 @@ import "@syncfusion/ej2-spreadsheet/styles/material.css";
 export default function LikeExcelAD() {
   const spreadsheetRef = useRef<SpreadsheetComponent>(null);
   const navigate = useNavigate();
+  const workbook = useWorkbook({ spreadsheetRef });
   
   const [adId, setAdId] = useState<string>('Loading...');
   const [adDomain, setAdDomain] = useState<string>('');
@@ -102,11 +100,13 @@ export default function LikeExcelAD() {
 
   // 📝 Handle action complete - show reason dialog
   const onActionComplete = (args: any) => {
+    if (workbook.isProgrammaticLoad()) return;
     if (args.action === 'cellSave' && args.eventArgs) {
       const data = args.eventArgs;
       const newValue = data.value !== undefined ? data.value : null;
-      const oldValue = cellOldValueRef.current?.address === data.address
-        ? cellOldValueRef.current.value
+      const oldCell = cellOldValueRef.current;
+      const oldValue = oldCell && oldCell.address === data.address
+        ? oldCell.value
         : null;
 
       setPendingCellChange({
@@ -159,27 +159,7 @@ export default function LikeExcelAD() {
 
     const selectedObj = templates.find(tmpl => String(tmpl.ID || tmpl.id) === templateId);
     const fileName = selectedObj?.filename || 'AAA.xlsx';
-    const filePath = `C:\\Alex\\${fileName}`;
-
-    fetch('http://localhost:3000/api/spreadsheet/open', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath })
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.jsonObject && spreadsheetRef.current) {
-          const spreadsheet = spreadsheetRef.current as any;
-          spreadsheet.open({ jsonObject: data.jsonObject });
-          setTimeout(() => { 
-            if (typeof spreadsheet.computeFormula === 'function') {
-              spreadsheet.computeFormula(); 
-            }
-            spreadsheet.hideSpinner(); 
-          }, 100);
-        }
-      })
-      .catch((err) => console.error("Open Template File Error:", err));
+    void workbook.openByFileId(fileName, undefined, fileName);
   };
 
   const onSaveToDb = () => {
@@ -200,32 +180,6 @@ export default function LikeExcelAD() {
           alert("Successfully saved to DB!");
         } else {
           alert("Failed to save to DB. Please check server response.");
-        }
-      })
-      .catch(err => { 
-        console.error("Save to DB Error:", err); 
-        isSaving.current = false; 
-      });
-    });
-  };
-
-  const onSaveToDbXX = () => {
-    const spreadsheet = spreadsheetRef.current as any;
-    if (!spreadsheet || isSaving.current) return;
-    isSaving.current = true;
-
-    spreadsheet.saveAsJson().then((response: any) => {
-      fetch('http://localhost:3000/api/spreadsheet/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spreadsheetData: response }) 
-      })
-      .then(res => {
-        isSaving.current = false;
-        if (res.ok) {
-          alert("Successfully saved to DB!");
-        } else {
-          alert("Failed to save to DB (404/Error). Please check backend /api/spreadsheet/save route.");
         }
       })
       .catch(err => { 
@@ -261,28 +215,6 @@ export default function LikeExcelAD() {
     });
   };
 
-  const onBeforeOpen = (args: any) => {
-    args.cancel = true;
-    const file = args.file;
-    const formData = new FormData();
-    formData.append('file', file);
-    fetch('http://localhost:3000/api/spreadsheet/open', { method: 'POST', body: formData })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.jsonObject && spreadsheetRef.current) {
-          const spreadsheet = spreadsheetRef.current as any;
-          spreadsheet.open({ jsonObject: data.jsonObject });
-          setTimeout(() => { 
-            if (typeof spreadsheet.computeFormula === 'function') {
-              spreadsheet.computeFormula(); 
-            }
-            spreadsheet.hideSpinner(); 
-          }, 100);
-        }
-      })
-      .catch((err) => console.error("Open Error:", err));
-  };
-
   return (
     <div className="h-full w-full flex flex-col overflow-hidden bg-white">
       <div className="h-12 border-b border-slate-200 flex items-center justify-between px-4 shrink-0 bg-slate-900 text-white">
@@ -306,6 +238,24 @@ export default function LikeExcelAD() {
               ))}
             </select>
           </div>
+          <select
+            value={workbook.selectedSheet}
+            onChange={(event) => void workbook.selectSheet(event.target.value)}
+            disabled={!workbook.fileId || workbook.isWorkbookLoading}
+            className="max-w-xs bg-slate-800 text-white text-xs px-2 py-1 rounded border border-slate-700 disabled:opacity-50"
+            title="Workbook sheet"
+          >
+            <option value="">No workbook loaded</option>
+            {workbook.sheets.map((sheet) => (
+              <option key={sheet.sheetId} value={sheet.name}>{sheet.name}{sheet.hidden ? ' (hidden)' : ''}</option>
+            ))}
+          </select>
+          {workbook.fileId && (
+            <span className="text-[10px] text-slate-400 font-mono">
+              {workbook.isWorkbookLoading ? 'Loading...' : `${workbook.totalRows.toLocaleString()} rows`}
+            </span>
+          )}
+          {workbook.error && <span className="text-[10px] text-red-400 truncate max-w-xs">{workbook.error}</span>}
         </div>
         
         <div className="flex gap-3 items-center">
@@ -334,10 +284,11 @@ export default function LikeExcelAD() {
             created={() => { (window as any).mySpreadsheet = spreadsheetRef.current; }}
             height="100%"
             width="100%"
+            scrollSettings={{ isFinite: true, enableVirtualization: true }}
             openUrl="http://localhost:3000/api/spreadsheet/open"
             saveUrl="http://localhost:3000/api/spreadsheet/save"
             allowOpen={true}
-            beforeOpen={onBeforeOpen}
+            beforeOpen={workbook.beforeOpen}
             allowSave={true}
             showSheetTabs={true}
             showRibbon={true}
