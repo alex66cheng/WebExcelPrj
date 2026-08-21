@@ -1,8 +1,10 @@
 // src/pages/likeexcel.tsx
-import React, { useState, useRef, useEffect, useCallback, RefObject } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import type { RefObject } from 'react';
 import { useNavigate } from 'react-router-dom';
 import '@syncfusion/ej2-react-buttons';
 import { SpreadsheetComponent } from '@syncfusion/ej2-react-spreadsheet';
+import { useWorkbook } from '../hooks/useWorkbook';
 
 // 使用 useGoogleLogin 隱式授權
 import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
@@ -210,6 +212,7 @@ interface CoreProps {
 
 function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLoginRegister }: CoreProps) {
   const spreadsheetRef = useRef<SpreadsheetComponent>(null);
+  const workbook = useWorkbook({ spreadsheetRef });
   const isSaving = useRef(false);
   const [isSavingToDb, setIsSavingToDb] = useState(false);
   const [collaborators, setCollaborators] = useState<any[]>([]);
@@ -357,7 +360,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
 
 
     
-    onUserLoginRegister((loggedInUser, token) => {
+    onUserLoginRegister((loggedInUser, _token) => {
       console.log(`⚡ [身分動態同步] 協作狀態更新: ${loggedInUser.email}`);
       const randomColors = ['#E53E3E', '#3182CE', '#38A169', '#D69E2E', '#805AD5', '#319795'];
       const chosenColor = randomColors[Math.floor(Math.random() * randomColors.length)];
@@ -376,15 +379,6 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
       doc.destroy();
     };
   }, [selectedTemplate.templateCode]);
-
-  const handleCellSave = (args: any) => {
-    if (!yDocRef.current || !args.element) return;
-    const yCellsMap = yDocRef.current.getMap('cells_data');
-    yCellsMap.set(args.address, {
-      row: args.rowIndex, col: args.colIndex,
-      value: args.value, formula: args.formula, address: args.address
-    });
-  };
 
   const onSaveWithStyle = () => {
     const spreadsheet = spreadsheetRef.current as any;
@@ -429,40 +423,8 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
     });
   };
 
-  const onBeforeOpen = (args: any) => {
-    args.cancel = true;
-    const file = args.file;
-    const formData = new FormData();
-    formData.append('file', file);
-
-    if (file && file.name) {
-    //  setTemplateName(file.name);
-    }
-
-    fetch('http://localhost:3000/api/spreadsheet/open', {
-      method: 'POST',
-      body: formData,
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.jsonObject && spreadsheetRef.current) {
-          const spreadsheet = spreadsheetRef.current as any;
-          console.log("JSON to load:", JSON.parse(data.jsonObject));
-          spreadsheet.open({ jsonObject: data.jsonObject });
-          
-          setTimeout(() => {
-            spreadsheet.hideSpinner();
-          }, 100);
-
-          console.log("✅ Data manually loaded into grid using .open()");
-        }
-      })
-      .catch((err) => console.error("Open Error:", err));
-  };
-
-
-
  const onActionComplete = (args: any) => {
+    if (workbook.isProgrammaticLoad()) return;
     // 根據你的 Console 輸出，資料藏在 args.eventArgs 中
     const data = args.eventArgs;
     console.log("🔍 在事件觸發時，userRef.current 是:", userRef.current);
@@ -482,8 +444,9 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
             const value = data.value !== undefined ? data.value : args.eventArgs.value;
 
             // 📝 Show reason dialog instead of logging directly
-            const oldValue = cellOldValueRef.current?.address === data.address
-              ? cellOldValueRef.current.value
+            const oldCell = cellOldValueRef.current;
+            const oldValue = oldCell && oldCell.address === data.address
+              ? oldCell.value
               : null;
             setPendingCellChange({
               address: data.address,
@@ -515,6 +478,24 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
         <div className="px-2 py-1 text-xs font-mono rounded border border-blue-500 bg-blue-950 text-blue-400 hidden sm:block">
           Active Table: {selectedTemplate.targetTable}
         </div>
+        <select
+          value={workbook.selectedSheet}
+          onChange={(event) => void workbook.selectSheet(event.target.value)}
+          disabled={!workbook.fileId || workbook.isWorkbookLoading}
+          className="max-w-xs bg-slate-900 text-slate-200 border border-slate-600 text-xs rounded px-2 py-1.5 disabled:opacity-50"
+          title="Workbook sheet"
+        >
+          <option value="">No workbook loaded</option>
+          {workbook.sheets.map((sheet) => (
+            <option key={sheet.sheetId} value={sheet.name}>{sheet.name}{sheet.hidden ? ' (hidden)' : ''}</option>
+          ))}
+        </select>
+        {workbook.fileId && (
+          <span className="text-[10px] text-slate-400 font-mono">
+            {workbook.isWorkbookLoading ? 'Loading...' : `${workbook.totalRows.toLocaleString()} rows`}
+          </span>
+        )}
+        {workbook.error && <span className="text-[10px] text-red-400 truncate max-w-xs">{workbook.error}</span>}
 
         <div className="hidden lg:flex items-center gap-1.5 ml-4">
           <span className="text-xs text-slate-500">正在協作:</span>
@@ -563,12 +544,13 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
           <SpreadsheetComponent 
                       ref={spreadsheetRef}
                       created={() => { (window as any).mySpreadsheet = spreadsheetRef.current; }}
-                      height="100%" 
+                      height="100%"
                       width="100%"
+                      scrollSettings={{ isFinite: true, enableVirtualization: true }}
                       openUrl="http://localhost:3000/api/spreadsheet/open"
                       saveUrl="http://localhost:3000/api/spreadsheet/saveX2" // 統一交給優化過的 saveX2 高擬真導出
                       allowOpen={true} 
-                      beforeOpen={onBeforeOpen}
+                      beforeOpen={workbook.beforeOpen}
                       allowSave={true}
                       showSheetTabs={true}
                       showRibbon={true}

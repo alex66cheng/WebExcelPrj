@@ -2,11 +2,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import '@syncfusion/ej2-react-buttons';
-import { 
-  SpreadsheetComponent, SheetsDirective, SheetDirective, 
-  RowsDirective, RowDirective, CellsDirective, CellDirective,
-  Inject
-} from '@syncfusion/ej2-react-spreadsheet';
+import { SpreadsheetComponent } from '@syncfusion/ej2-react-spreadsheet';
+import { useWorkbook } from '../hooks/useWorkbook';
 
 // 引入 Syncfusion 官方基礎與下拉選單樣式
 import '@syncfusion/ej2-base/styles/material.css';
@@ -31,15 +28,15 @@ interface MongoTemplateOption {
 export default function LikeExcel() {
   const spreadsheetRef = useRef<SpreadsheetComponent>(null);
   const navigate = useNavigate();
-  const isSaving = useRef(false);
-  const [isSavingToDb, setIsSavingToDb] = useState(false); 
+  const [isSavingToDb, setIsSavingToDb] = useState(false);
 
   // 存放從 MongoDB 撈出來的下拉選單資料源
   const [templateOptions, setTemplateOptions] = useState<MongoTemplateOption[]>([]);
   // 當前選中的 MongoDB 範本物件實體
   const [selectedTemplate, setSelectedTemplate] = useState<MongoTemplateOption | null>(null);
   // 備用本機下載預設檔名
-  const [templateName, setTemplateName] = useState("未命名矩陣範本.xlsx");
+  const [, setTemplateName] = useState("未命名矩陣範本.xlsx");
+  const workbook = useWorkbook({ spreadsheetRef, onFileNameChange: setTemplateName });
 
   // 🌟 核心優化：元件掛載時自動至 MongoDB 專屬路由提取所有已設計的真實範本清單
   useEffect(() => {
@@ -87,50 +84,6 @@ export default function LikeExcel() {
     }
   };
 
-  // 🌟 修正對齊版：手動觸發轉檔匯出 Excel (精準適應後端 saveX2 的 JSONData 結構)
-  const onSaveWithStyle = () => {
-    const spreadsheet = spreadsheetRef.current as any;
-    if (!spreadsheet || isSaving.current) return;
-
-    isSaving.current = true;
-    console.log("🎨 Exporting with ExcelJS styles via SaveX2...");
-
-    spreadsheet.saveAsJson().then((response: any) => {
-      // 核心包裝：解開 Workbook 並將其字串化放入 JSONData
-      const payload = {
-        JSONData: JSON.stringify(response.jsonObject ? JSON.parse(response.jsonObject).Workbook : response)
-      };
-
-      fetch('http://localhost:3000/api/spreadsheet/saveX2', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      .then(res => {
-        if (!res.ok) throw new Error("Server error during styled export");
-        return res.blob();
-      })
-      .then(blob => {
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = templateName.endsWith('.xlsx') ? templateName : `${templateName}.xlsx`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-        
-        isSaving.current = false;
-        console.log("✅ Styled file downloaded successfully");
-      })
-      .catch(err => {
-        console.error("❌ Save Error:", err);
-        alert(`匯出 Excel 發生錯誤: ${err.message}`);
-        isSaving.current = false;
-      });
-    });
-  };
-
   // 將當前 Spreadsheet 的活頁簿數據，依據選定範本解析並寫入 SQL 資料庫
   const onSaveToDatabase = () => {
     const spreadsheet = spreadsheetRef.current as any;
@@ -171,37 +124,6 @@ export default function LikeExcel() {
         setIsSavingToDb(false);
       });
     });
-  };
-
-  const onBeforeOpen = (args: any) => {
-    args.cancel = true;
-    const file = args.file;
-    const formData = new FormData();
-    formData.append('file', file);
-
-    if (file && file.name) {
-      setTemplateName(file.name);
-    }
-
-    fetch('http://localhost:3000/api/spreadsheet/open', {
-      method: 'POST',
-      body: formData,
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.jsonObject && spreadsheetRef.current) {
-          const spreadsheet = spreadsheetRef.current as any;
-          console.log("JSON to load:", JSON.parse(data.jsonObject));
-          spreadsheet.open({ jsonObject: data.jsonObject });
-          
-          setTimeout(() => {
-            spreadsheet.hideSpinner();
-          }, 100);
-
-          console.log("✅ Data manually loaded into grid using .open()");
-        }
-      })
-      .catch((err) => console.error("Open Error:", err));
   };
 
   return (
@@ -253,6 +175,26 @@ export default function LikeExcel() {
             Active Table: {selectedTemplate.targetTable || 'factory_demand_forecast2'}
           </div>
         )}
+        <select
+          value={workbook.selectedSheet}
+          onChange={(event) => void workbook.selectSheet(event.target.value)}
+          disabled={!workbook.fileId || workbook.isWorkbookLoading}
+          className="max-w-xs bg-slate-900 text-slate-200 border border-slate-600 text-xs rounded px-2 py-1.5 disabled:opacity-50"
+          title="Workbook sheet"
+        >
+          <option value="">No workbook loaded</option>
+          {workbook.sheets.map((sheet) => (
+            <option key={sheet.sheetId} value={sheet.name}>
+              {sheet.name}{sheet.hidden ? ' (hidden)' : ''}
+            </option>
+          ))}
+        </select>
+        {workbook.fileId && (
+          <span className="text-[10px] text-slate-400 font-mono">
+            {workbook.isWorkbookLoading ? 'Loading...' : `${workbook.totalRows.toLocaleString()} rows`}
+          </span>
+        )}
+        {workbook.error && <span className="text-[10px] text-red-400 truncate max-w-xs">{workbook.error}</span>}
         
         <div className="flex-1" /> {/* 彈性空格推至右側 */}
 
@@ -306,12 +248,13 @@ export default function LikeExcel() {
           <SpreadsheetComponent 
             ref={spreadsheetRef}
             created={() => { (window as any).mySpreadsheet = spreadsheetRef.current; }}
-            height="100%" 
+            height="100%"
             width="100%"
+            scrollSettings={{ isFinite: true, enableVirtualization: true }}
             openUrl="http://localhost:3000/api/spreadsheet/open"
             saveUrl="http://localhost:3000/api/spreadsheet/saveX2" // 統一交給優化過的 saveX2 高擬真導出
             allowOpen={true} 
-            beforeOpen={onBeforeOpen}
+            beforeOpen={workbook.beforeOpen}
             allowSave={true}
             showSheetTabs={true}
             showRibbon={true}

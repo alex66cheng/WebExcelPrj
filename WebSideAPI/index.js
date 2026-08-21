@@ -9,6 +9,19 @@ const fs = require('fs');
 const vm = require('vm'); // 🌟 原本的 Node.js 虛擬沙盒模組，完整保留
 const url = require('url');
 const mongoose = require('mongoose');
+const {
+    WorkbookCache,
+    assertIdentifier,
+    buildRepeatedGroupRecords,
+    fixColor,
+    isAllowedExcelFile,
+    parseCellValue,
+    parseTargetTable,
+    resolveFileId,
+    resolveSafePath,
+    sanitizeColumnName,
+    serializeWorksheetChunk
+} = require('./spreadsheetSupport');
 
 // 🌟 多人即時協作與網路核心套件
 const http = require('http');
@@ -40,8 +53,18 @@ if (!fs.existsSync(uploadDirectory)) {
 }
 
 // 記憶體暫存 (保留給原本的 open 路由使用)
+const excelUploadOptions = {
+    limits: { fileSize: 25 * 1024 * 1024 },
+    fileFilter: (req, file, callback) => {
+        if (!isAllowedExcelFile(file.originalname)) {
+            return callback(new Error('Only .xlsx, .xlsm, and .xls files are allowed'));
+        }
+        callback(null, true);
+    }
+};
+
 const memoryStorage = multer.memoryStorage();
-const uploadMemory = multer({ storage: memoryStorage });
+const uploadMemory = multer({ storage: memoryStorage, ...excelUploadOptions });
 
 // 實體硬碟儲存 (提供給儲存至 Server 範本使用)
 const diskStorage = multer.diskStorage({
@@ -54,7 +77,28 @@ const diskStorage = multer.diskStorage({
         cb(null, file.fieldname + '-' + uniqueSuffix + ext);
     }
 });
-const uploadDisk = multer({ storage: diskStorage });
+const uploadDisk = multer({ storage: diskStorage, ...excelUploadOptions });
+
+const additionalReadRoots = String(process.env.EXCEL_ALLOWED_READ_ROOTS || '')
+    .split(path.delimiter)
+    .map(root => root.trim())
+    .filter(Boolean);
+const allowedReadRoots = [uploadDirectory, path.resolve(__dirname, '..'), ...additionalReadRoots]
+    .map(root => path.resolve(root));
+const workbookCache = new WorkbookCache({ maxEntries: 3, ttlMs: 10 * 60 * 1000 });
+
+function resolveWorkbookPath({ fileId, filePath }) {
+    if (fileId) return resolveFileId(fileId, uploadDirectory);
+    if (filePath) return resolveSafePath(filePath, allowedReadRoots);
+    throw new Error('A workbook fileId or filePath is required');
+}
+
+async function loadWorkbookFromRequest(req) {
+    if (req.file?.buffer) return workbookCache.loadBuffer(req.file.buffer);
+    const workbookPath = resolveWorkbookPath(req.body || {});
+    if (!fs.existsSync(workbookPath)) throw new Error('Workbook file was not found');
+    return workbookCache.load(workbookPath);
+}
 
 
 // ==========================================
@@ -138,42 +182,6 @@ async function getPool(customConfig = {}) {
 // ==========================================
 // 🧪 共用工具函式
 // ==========================================
-const fixColorX = (colorObj) => {
-    if (!colorObj) return null;
-    let argb = colorObj.argb;
-    if (argb && argb.length === 8) return `#${argb.slice(2)}`;
-    if (argb && argb.length === 6) return `#${argb}`;
-    return null;
-};
-
-function parseCellValue(cell) {
-    if (cell === undefined || cell === null) return '';
-    if (typeof cell === 'object') {
-        return cell.value !== undefined ? String(cell.value) : (cell.text !== undefined ? String(cell.text) : '');
-    }
-    return String(cell);
-}
-
-function parseCellValueX(cellValue) {
-    if (cellValue === undefined || cellValue === null) return "";
-    if (cellValue.result !== undefined) {
-        cellValue = cellValue.result;
-    }
-    if (cellValue && cellValue.richText && Array.isArray(cellValue.richText)) {
-        return cellValue.richText.map(item => item.text || "").join("").trim();
-    }
-    if (typeof cellValue === 'object' && !(cellValue instanceof Date)) {
-        if (cellValue.text !== undefined) return String(cellValue.text).trim();
-        try {
-            const strObj = JSON.stringify(cellValue);
-            const match = strObj.match(/"(?:text|value|result)"\s*:\s*"([^"]+)"/);
-            if (match && match[1]) return match[1].trim();
-        } catch(e) {}
-            return "";
-    }
-    return String(cellValue).trim();
-}
-
 function letterToColumnIndex(letter) {
     if (!letter) return 1;
     let column = 0;
@@ -198,7 +206,9 @@ app.post('/api/spreadsheet/upload', uploadDisk.single('file'), (req, res) => {
             success: true,
             message: '檔案上傳成功並安全儲存至伺服器端目錄下',
             filePath: req.file.path,
-            fileName: req.file.filename
+            fileName: req.file.filename,
+            fileId: req.file.filename,
+            originalName: req.file.originalname
         });
     } catch (err) {
         console.error("Upload Route Error:", err);
@@ -237,164 +247,57 @@ app.post('/api/spreadsheet/test-connection', async (req, res) => {
 // ==========================================
 // 1. 高擬真 OPEN 路由
 // ==========================================
-//const fs = require('fs'); // 確保有引入 fs
-
-function fixColor(colorObj) {
-    if (!colorObj) return undefined;
-    
-    // 如果是 ARGB 格式 (例如 { argb: 'FF0070C0' })
-    if (colorObj.argb) {
-        let argb = colorObj.argb.toString();
-        // 如果帶有 8 碼透明度，取後面 6 碼轉換成 Hex
-        if (argb.length === 8) {
-            return '#' + argb.substring(2);
-        }
-        return '#' + argb;
+app.post('/api/spreadsheet/workbook-info', uploadMemory.single('file'), async (req, res) => {
+    try {
+        const workbook = await loadWorkbookFromRequest(req);
+        const sheets = workbook.worksheets.map((worksheet, index) => ({
+            index: index + 1,
+            name: worksheet.name,
+            sheetId: worksheet.id,
+            hidden: worksheet.state !== 'visible',
+            rowCount: worksheet.rowCount,
+            columnCount: worksheet.columnCount
+        }));
+        res.json({ success: true, sheets });
+    } catch (err) {
+        res.status(400).json({ success: false, message: err.message });
     }
-    
-    // 如果直接是 hex 屬性
-    if (colorObj.hex) {
-        return '#' + colorObj.hex;
-    }
-    
-    return undefined;
-};
+});
 
 app.post('/api/spreadsheet/open', uploadMemory.single('file'), async (req, res) => {
-    console.log("-----------------------------------------");
-    console.log("🚀 [DEBUG] 收到請求 URL:", req.url);
-    console.log("🚀 [DEBUG] Header Content-Type:", req.headers['content-type']);
-    console.log("🚀 [DEBUG] req.file 是否存在:", !!req.file);
-
     try {
-        let fileBuffer;
+        const workbook = await loadWorkbookFromRequest(req);
+        const { sheetName } = req.body || {};
+        const worksheet = sheetName ? workbook.getWorksheet(sheetName) : workbook.worksheets[0];
+        if (!worksheet) return res.status(400).json({ success: false, message: `Sheet not found: ${sheetName || ''}` });
 
-        // 情況 A：如果是透過檔案上傳
-        if (req.file) {
-            console.log("🚀 [DEBUG] 檔名:", req.file.originalname, "大小:", req.file.size);
-            fileBuffer = req.file.buffer;
-        } 
-        // 情況 B：如果是透過前端傳送 filePath (例如 C:\Alex\AAA.xlsx)
-        else if (req.body && req.body.filePath) {
-            const filePath = req.body.filePath;
-            console.log("🚀 [DEBUG] 讀取伺服器檔案路徑:", filePath);
-            
-            if (!fs.existsSync(filePath)) {
-                return res.status(400).send("File not found on server path");
-            }
-            fileBuffer = fs.readFileSync(filePath);
-        } 
-        else {
-            return res.status(400).send("No file uploaded or file path provided");
-        }
-
-        const workbook = new ExcelJS.Workbook();
-        await workbook.xlsx.load(fileBuffer);
-        const worksheet = workbook.getWorksheet(1);
-
-        // 🛡️ 決定全域的最大欄位數基準（至少 26 欄，或依工作表實際最大欄位而定）
-        const maxColCount = Math.max(worksheet.columnCount || 0, 26);
-
-        let formattedRows = [];
-        worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
-            let cells = [];
-            
-            // 🛡️ 改用絕對迴圈讀取每一欄，確保 cells 陣列索引 1 對 1 絕對不會位移
-            for (let c = 1; c <= maxColCount; c++) {
-                const cell = row.getCell(c);
-                const cellObj = {
-                    formula: cell.formula ? `=${cell.formula}` : undefined,
-                    style: {}
-                };
-
-                // 🎨 安全處理：將 richText 陣列合併為純文字字串，避免格式崩潰或出現 [object Object]
-                if (cell.value && typeof cell.value === 'object' && Array.isArray(cell.value.richText)) {
-                    cellObj.value = cell.value.richText.map(rt => rt.text || '').join('');
-                } else {
-                    cellObj.value = parseCellValue(cell.value);
-                }
-
-                if (cell.font) {
-                    if (cell.font.bold) cellObj.style.fontWeight = 'bold';
-                    if (cell.font.italic) cellObj.style.fontStyle = 'italic';
-                    if (cell.font.size) cellObj.style.fontSize = `${cell.font.size}pt`;
-                    const fColor = fixColor(cell.font.color);
-                    if (fColor) cellObj.style.color = fColor;
-                }
-
-                if (cell.fill && cell.fill.fgColor) {
-                    const bColor = fixColor(cell.fill.fgColor);
-                    if (bColor) cellObj.style.backgroundColor = bColor;
-                }
-
-                if (cell.border) {
-                    if (cell.border.top) cellObj.style.borderTop = "1px solid #000000";
-                    if (cell.border.bottom) cellObj.style.borderBottom = "1px solid #000000";
-                    if (cell.border.left) cellObj.style.borderLeft = "1px solid #000000";
-                    if (cell.border.right) cellObj.style.borderRight = "1px solid #000000";
-                }
-
-                if (cell.alignment) {
-                    if (cell.alignment.horizontal) cellObj.style.textAlign = cell.alignment.horizontal;
-                    if (cell.alignment.vertical) {
-                        cellObj.style.verticalAlign = cell.alignment.vertical === 'middle' ? 'middle' : cell.alignment.vertical;
-                    }
-                    if (cell.alignment.wrapText) cellObj.style.wrap = true;
-                }
-
-                cells[c - 1] = cellObj;
-            }
-
-            formattedRows[rowNumber - 1] = { cells: cells, height: row.height ? row.height * 1.33 : 20 };
+        const chunk = serializeWorksheetChunk(worksheet, {
+            startRow: req.body?.startRow,
+            rowCount: req.body?.rowCount,
+            formulaMode: req.body?.formulaMode || 'formula'
         });
-
-        // 🛡️ 建立對應的欄位寬度陣列
-        const columns = [];
-        for (let c = 1; c <= maxColCount; c++) {
-            const col = worksheet.getColumn(c);
-            columns.push({ width: col.width ? col.width * 7 : 64 });
-        }
-
-       if (worksheet._merges) {
-            Object.values(worksheet._merges).forEach(merge => {
-                const { top, left, bottom, right } = merge;
-                const masterRow = formattedRows[top - 1];
-                if (masterRow && masterRow.cells[left - 1]) {
-                    const masterCell = masterRow.cells[left - 1];
-                    masterCell.rowSpan = (bottom - top) + 1;
-                    masterCell.colSpan = (right - left) + 1;
-
-                    // 🛡️ 確保合併儲存格的每一個子儲存格都有完整的邊框，防止線條缺損
-                    for (let r = top; r <= bottom; r++) {
-                        for (let c = left; c <= right; c++) {
-                            if (formattedRows[r - 1] && formattedRows[r - 1].cells[c - 1]) {
-                                const targetCell = formattedRows[r - 1].cells[c - 1];
-                                if (!targetCell.style) targetCell.style = {};
-
-                                // 針對合併區塊的邊界補上框線，確保四周與格線完整
-                                if (r === top) targetCell.style.borderTop = "1px solid #000000";
-                                if (r === bottom) targetCell.style.borderBottom = "1px solid #000000";
-                                if (c === left) targetCell.style.borderLeft = "1px solid #000000";
-                                if (c === right) targetCell.style.borderRight = "1px solid #000000";
-
-                                // 除了左上角主格保留內容外，其餘被合併涵蓋的格子清空值
-                                if (r !== top || c !== left) {
-                                    targetCell.value = "";
-                                    targetCell.formula = undefined;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        const result = { Workbook: { sheets: [{ name: worksheet.name, rows: formattedRows, columns: columns }] } };
-        console.log("📤 [DEBUG] 準備回傳給前端，JSON 字串長度:", JSON.stringify(result).length);
-        res.json({ jsonObject: JSON.stringify(result) });
-    } catch (err) { 
-        console.error("Open Error:", err);
-        res.status(500).send(err.message); 
+        const result = {
+            Workbook: {
+                sheets: [{
+                    name: worksheet.name,
+                    rows: chunk.rows,
+                    columns: chunk.columns,
+                    rowCount: chunk.rows.length
+                }]
+            }
+        };
+        res.json({
+            success: true,
+            jsonObject: JSON.stringify(result),
+            sheetName: worksheet.name,
+            startRow: chunk.startRow,
+            nextStartRow: chunk.nextStartRow,
+            totalRows: chunk.totalRows,
+            hasMore: chunk.hasMore
+        });
+    } catch (err) {
+        console.error('Open Error:', err);
+        res.status(400).json({ success: false, message: err.message });
     }
 });
 
@@ -789,6 +692,102 @@ app.post('/api/spreadsheet/save-excel-to-dbX', async (req, res) => {
 // ==========================================
 // 4. Modal 自訂規格建表 API
 // ==========================================
+const CREATE_TABLE_TYPES = new Set(['varchar', 'nvarchar', 'int', 'decimal', 'datetime', 'float']);
+
+function getCreateColumnDefinition(field) {
+    const name = assertIdentifier(String(field.name || '').trim(), 'column');
+    const type = String(field.type || '').toLowerCase();
+    if (!CREATE_TABLE_TYPES.has(type)) throw new Error(`Unsupported SQL type: ${field.type || ''}`);
+
+    let typeSql = type.toUpperCase();
+    if (type === 'varchar' || type === 'nvarchar') {
+        const rawLength = String(field.length || '255').toUpperCase();
+        if (rawLength === 'MAX') typeSql = `${type.toUpperCase()}(MAX)`;
+        else {
+            const length = Number.parseInt(rawLength, 10);
+            if (!Number.isInteger(length) || length < 1 || length > 4000) {
+                throw new Error(`Invalid length for column ${name}`);
+            }
+            typeSql = `${type.toUpperCase()}(${length})`;
+        }
+    } else if (type === 'decimal') {
+        const match = String(field.length || '18,4').match(/^(\d{1,2})\s*,\s*(\d{1,2})$/);
+        if (!match) throw new Error(`Invalid decimal precision for column ${name}`);
+        const precision = Number(match[1]);
+        const scale = Number(match[2]);
+        if (precision < 1 || precision > 38 || scale < 0 || scale > precision) {
+            throw new Error(`Invalid decimal precision for column ${name}`);
+        }
+        typeSql = `DECIMAL(${precision}, ${scale})`;
+    }
+    return `[${name}] ${typeSql} ${field.allowNull ? 'NULL' : 'NOT NULL'}`;
+}
+
+async function getTargetColumns(pool, schemaName, tableName) {
+    const result = await pool.request()
+        .input('schemaName', sql.NVarChar(128), schemaName)
+        .input('tableName', sql.NVarChar(128), tableName)
+        .query(`
+            SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, COLUMN_DEFAULT,
+                   NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE,
+                   COLUMNPROPERTY(OBJECT_ID(QUOTENAME(TABLE_SCHEMA) + '.' + QUOTENAME(TABLE_NAME)), COLUMN_NAME, 'IsIdentity') AS IS_IDENTITY,
+                   COLUMNPROPERTY(OBJECT_ID(QUOTENAME(TABLE_SCHEMA) + '.' + QUOTENAME(TABLE_NAME)), COLUMN_NAME, 'IsComputed') AS IS_COMPUTED
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = @schemaName AND TABLE_NAME = @tableName
+            ORDER BY ORDINAL_POSITION
+        `);
+    return result.recordset;
+}
+
+function getMssqlType(column) {
+    const type = String(column.DATA_TYPE || '').toLowerCase();
+    const length = column.CHARACTER_MAXIMUM_LENGTH;
+    if (type === 'nvarchar' || type === 'nchar' || type === 'ntext') return sql.NVarChar(length === -1 || !length ? sql.MAX : length);
+    if (type === 'varchar' || type === 'char' || type === 'text') return sql.VarChar(length === -1 || !length ? sql.MAX : length);
+    if (type === 'int') return sql.Int;
+    if (type === 'bigint') return sql.BigInt;
+    if (type === 'smallint') return sql.SmallInt;
+    if (type === 'tinyint') return sql.TinyInt;
+    if (type === 'bit') return sql.Bit;
+    if (type === 'decimal' || type === 'numeric') return sql.Decimal(column.NUMERIC_PRECISION || 18, column.NUMERIC_SCALE || 4);
+    if (type === 'float') return sql.Float;
+    if (type === 'real') return sql.Real;
+    if (type === 'date') return sql.Date;
+    if (type === 'datetime') return sql.DateTime;
+    if (type === 'datetime2') return sql.DateTime2;
+    if (type === 'smalldatetime') return sql.SmallDateTime;
+    throw new Error(`Unsupported target SQL type: ${column.DATA_TYPE}`);
+}
+
+function coerceImportValue(value, column, sourceRow) {
+    if (value === '' || value === undefined || value === null) return null;
+    const type = String(column.DATA_TYPE || '').toLowerCase();
+    try {
+        if (['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'real'].includes(type)) {
+            const number = Number(String(value).replace(/,/g, ''));
+            if (!Number.isFinite(number)) throw new Error('not numeric');
+            return number;
+        }
+        if (type === 'bit') {
+            if (typeof value === 'boolean') return value;
+            const normalized = String(value).trim().toLowerCase();
+            if (['1', 'true', 'yes', 'y'].includes(normalized)) return true;
+            if (['0', 'false', 'no', 'n'].includes(normalized)) return false;
+            throw new Error('not a boolean');
+        }
+        if (['date', 'datetime', 'datetime2', 'smalldatetime'].includes(type)) {
+            if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+            if (typeof value === 'number') return new Date((value - 25569) * 86400000);
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) throw new Error('not a date');
+            return date;
+        }
+        return String(value);
+    } catch (err) {
+        throw new Error(`Row ${sourceRow}, column ${column.COLUMN_NAME}: ${err.message}`);
+    }
+}
+
 app.post('/api/spreadsheet/check-table', async (req, res) => {
     const { targetTable, fields, host, user, password } = req.body;
 
@@ -796,16 +795,8 @@ app.post('/api/spreadsheet/check-table', async (req, res) => {
         return res.status(400).json({ success: false, message: '請先輸入目標資料庫 Table Name' });
     }
 
-    let schemaName = 'dbo';
-    let tableName = targetTable.trim();
-
-    if (tableName.includes('.')) {
-        const parts = tableName.split('.');
-        schemaName = parts[0];
-        tableName = parts[1];
-    }
-
     try {
+        const { schemaName, tableName } = parseTargetTable(targetTable);
         const activePool = await getPool({ host, user, password });
 
         const checkRequest = new sql.Request(activePool);
@@ -845,19 +836,7 @@ app.post('/api/spreadsheet/check-table', async (req, res) => {
             }
         }
 
-        const columnDefinitions = uniqueFields.map(f => {
-            const colName = f.name.replace(/[\[\]]/g, ''); 
-            let typeStr = f.type;
-
-            if ((f.type === 'varchar' || f.type === 'nvarchar') && f.length) {
-                typeStr = `${f.type}(${f.length})`;
-            } else if (f.type === 'decimal') {
-                typeStr = 'DECIMAL(18, 4)'; 
-            }
-
-            const nullStr = f.allowNull ? 'NULL' : 'NOT NULL';
-            return `[${colName}] ${typeStr} ${nullStr}`;
-        });
+        const columnDefinitions = uniqueFields.map(getCreateColumnDefinition);
 
         const createSql = `
             CREATE TABLE [${schemaName}].[${tableName}] (
@@ -895,16 +874,8 @@ app.get('/api/spreadsheet/get-table-columns', async (req, res) => {
         return res.status(400).json({ success: false, message: '未提供目標資料表名稱' });
     }
 
-    let schemaName = 'dbo';
-    let tableName = targetTable.trim();
-
-    if (tableName.includes('.')) {
-        const parts = tableName.split('.');
-        schemaName = parts[0].replace(/[\[\]]/g, '');
-        tableName = parts[1].replace(/[\[\]]/g, '');
-    }
-
     try {
+        const { schemaName, tableName } = parseTargetTable(targetTable);
         const activePool = await getPool({ host, user, password });
 
         const colRequest = new sql.Request(activePool);
@@ -949,16 +920,18 @@ app.post('/api/spreadsheet/save-template', (req, res) => {
 app.post('/api/spreadsheet/execute-import', async (req, res) => {
     const config = req.body;
     const { 
-        uploadedFilePath, targetTable, dataStartRow, sheetMode, sheetValue, 
+        fileId, uploadedFilePath, targetTable, dataStartRow, sheetMode, sheetValue,
         rowHeaders, timeline, skipHeaders, dbConfig,
         macroScript // 🌟 新增：由前端傳入的自訂 JavaScript 巨集代碼字串
     } = config;
 
-    if (!uploadedFilePath || !fs.existsSync(uploadedFilePath)) {
-        return res.status(400).json({ success: false, message: '伺服器找不到先前上傳的 Excel 檔案實體，請重新上傳。' });
-    }
-
     try {
+        const workbookPath = resolveWorkbookPath({ fileId, filePath: uploadedFilePath });
+        if (!fs.existsSync(workbookPath)) {
+            return res.status(400).json({ success: false, message: '伺服器找不到先前上傳的 Excel 檔案實體，請重新上傳。' });
+        }
+        const parsedTarget = parseTargetTable(targetTable);
+
         // 1. 動態建立資料庫連線池
         const activePool = await getPool({
             host: dbConfig?.host,
@@ -968,7 +941,7 @@ app.post('/api/spreadsheet/execute-import', async (req, res) => {
 
         // 2. 利用 exceljs 讀取指定的 Excel 檔案
         const workbook = new ExcelJS.Workbook();
-        await workbook.xlsx.readFile(uploadedFilePath);
+        await workbook.xlsx.readFile(workbookPath);
         
         const worksheet = sheetMode === 'index' 
             ? workbook.worksheets[Number(sheetValue) - 1] 
@@ -1096,6 +1069,7 @@ app.post('/api/spreadsheet/execute-import', async (req, res) => {
                 let insertValues = [];
                 
                 Object.keys(record).forEach((fieldName, idx) => {
+                    assertIdentifier(fieldName, 'column');
                     const paramName = `param_${idx}`;
                     insertColumns.push(`[${fieldName}]`);
                     insertValues.push(`@${paramName}`);
@@ -1108,7 +1082,7 @@ app.post('/api/spreadsheet/execute-import', async (req, res) => {
                 });
 
                 const queryStr = `
-                    INSERT INTO ${targetTable} (${insertColumns.join(', ')})
+                    INSERT INTO ${parsedTarget.qualifiedName} (${insertColumns.join(', ')})
                     VALUES (${insertValues.join(', ')})
                 `;
                 await reqInsert.query(queryStr);
@@ -1406,7 +1380,111 @@ app.get('/api/spreadsheet/cell-log-collections', async (req, res) => {
     }
 });
 
-// 🌟 伺服器啟動監聯
+// ==========================================
+// Repeated-column-group preview and bulk import
+// ==========================================
+app.post('/api/spreadsheet/import-sheet', async (req, res) => {
+    const config = req.body || {};
+    try {
+        const workbookPath = resolveWorkbookPath({ fileId: config.fileId, filePath: config.filePath });
+        if (!fs.existsSync(workbookPath)) throw new Error('Uploaded workbook was not found');
+        const workbook = await workbookCache.load(workbookPath);
+        const worksheet = workbook.getWorksheet(config.sheetName);
+        if (!worksheet) throw new Error(`Sheet not found: ${config.sheetName || ''}`);
+
+        const parsed = buildRepeatedGroupRecords(worksheet, config);
+        const warnings = [];
+        if (parsed.records.length === 0) warnings.push('No importable records were produced by the current mappings.');
+
+        const mappedFields = new Set([config.sourceGroupField || 'source_group']);
+        for (const mapping of config.fixedMappings || []) mappedFields.add(assertIdentifier(mapping.dbFieldName, 'column'));
+        for (const group of config.repeatGroups || []) {
+            for (const mapping of group.mappings || []) mappedFields.add(assertIdentifier(mapping.dbFieldName, 'column'));
+        }
+
+        if (config.dryRun === true) {
+            return res.json({
+                success: true,
+                dryRun: true,
+                outputCount: parsed.records.length,
+                skippedRowCount: parsed.skippedRowCount,
+                skippedGroupCount: parsed.skippedGroupCount,
+                fields: [...mappedFields],
+                warnings,
+                preview: parsed.records.slice(0, 10).map(record => ({
+                    sourceRow: record.sourceRow,
+                    groupLabel: record.groupLabel,
+                    ...record.values
+                }))
+            });
+        }
+
+        const { schemaName, tableName } = parseTargetTable(config.targetTable);
+        const activePool = await getPool({
+            host: config.dbConfig?.host,
+            user: config.dbConfig?.user,
+            password: config.dbConfig?.password
+        });
+        const targetColumns = await getTargetColumns(activePool, schemaName, tableName);
+        if (targetColumns.length === 0) throw new Error(`Target table [${schemaName}].[${tableName}] was not found`);
+
+        const targetByName = new Map(targetColumns.map(column => [column.COLUMN_NAME.toLowerCase(), column]));
+        const missingFields = [...mappedFields].filter(field => !targetByName.has(field.toLowerCase()));
+        if (missingFields.length) throw new Error(`Target table is missing mapped columns: ${missingFields.join(', ')}`);
+
+        const insertColumns = targetColumns.filter(column =>
+            mappedFields.has(column.COLUMN_NAME) || [...mappedFields].some(field => field.toLowerCase() === column.COLUMN_NAME.toLowerCase())
+        );
+        const missingRequired = targetColumns.filter(column =>
+            column.IS_NULLABLE === 'NO' && !column.IS_IDENTITY && !column.IS_COMPUTED && column.COLUMN_DEFAULT == null &&
+            !insertColumns.some(insertColumn => insertColumn.COLUMN_NAME.toLowerCase() === column.COLUMN_NAME.toLowerCase())
+        );
+        if (missingRequired.length) {
+            throw new Error(`Required target columns are not mapped: ${missingRequired.map(column => column.COLUMN_NAME).join(', ')}`);
+        }
+
+        const transaction = new sql.Transaction(activePool);
+        await transaction.begin();
+        let insertedCount = 0;
+        try {
+            for (let offset = 0; offset < parsed.records.length; offset += 1000) {
+                const batch = parsed.records.slice(offset, offset + 1000);
+                const table = new sql.Table(tableName);
+                table.schema = schemaName;
+                table.create = false;
+                insertColumns.forEach(column => {
+                    table.columns.add(column.COLUMN_NAME, getMssqlType(column), { nullable: column.IS_NULLABLE === 'YES' });
+                });
+                batch.forEach(record => {
+                    const valueLookup = new Map(Object.entries(record.values).map(([key, value]) => [key.toLowerCase(), value]));
+                    table.rows.add(...insertColumns.map(column =>
+                        coerceImportValue(valueLookup.get(column.COLUMN_NAME.toLowerCase()), column, record.sourceRow)
+                    ));
+                });
+                await new sql.Request(transaction).bulk(table);
+                insertedCount += batch.length;
+            }
+            await transaction.commit();
+        } catch (err) {
+            await transaction.rollback();
+            throw err;
+        }
+
+        res.json({
+            success: true,
+            dryRun: false,
+            insertedCount,
+            skippedRowCount: parsed.skippedRowCount,
+            skippedGroupCount: parsed.skippedGroupCount,
+            message: `Successfully appended ${insertedCount} records to [${schemaName}].[${tableName}].`
+        });
+    } catch (err) {
+        console.error('Repeated group import failed:', err);
+        res.status(400).json({ success: false, message: err.message });
+    }
+});
+
+// Register every route before accepting requests.
 server.listen(3000, () => {
     console.log(`🚀 Final Data Server running at http://localhost:3000`);
 });

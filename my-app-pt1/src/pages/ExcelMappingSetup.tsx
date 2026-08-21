@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 // ==========================================
 // 1. TypeScript Interfaces & Definitions
@@ -17,6 +17,34 @@ export interface RowHeaderMapping {
   isGrouped: boolean;
   filterType: 'none' | 'not_empty' | 'numeric' | 'regex'; 
   filterExpression: string; 
+}
+
+interface RepeatGroupMapping {
+  id: string;
+  excelColumn: string;
+  dbFieldName: string;
+}
+
+interface RepeatGroup {
+  id: string;
+  label: string;
+  skipWhenAllEmpty: boolean;
+  mappings: RepeatGroupMapping[];
+}
+
+interface WorkbookSheetInfo {
+  sheetId: number;
+  name: string;
+  hidden: boolean;
+  rowCount: number;
+}
+
+interface ImportPreview {
+  outputCount: number;
+  skippedRowCount: number;
+  skippedGroupCount: number;
+  warnings: string[];
+  preview: Record<string, unknown>[];
 }
 
 const AVAILABLE_DATA_TYPES = [
@@ -52,7 +80,9 @@ export const ExcelMappingSetup: React.FC = () => {
   const [uploadingFile, setUploadingFile] = useState(false);
   
   // 改為與資料庫 filename 欄位完全對應的狀態變數
-  const [filenameField, setFilenameField] = useState(''); 
+  const [filenameField, setFilenameField] = useState('');
+  const [serverFileId, setServerFileId] = useState('');
+  const [workbookSheets, setWorkbookSheets] = useState<WorkbookSheetInfo[]>([]);
 
   const [dbHost, setDbHost] = useState('127.0.0.1');
   const [dbUser, setDbUser] = useState('');
@@ -66,6 +96,21 @@ export const ExcelMappingSetup: React.FC = () => {
   const [sheetMode, setSheetMode] = useState<'name' | 'index'>('index');
   const [sheetValue, setSheetValue] = useState<string | number>(1);
   const [dataStartRow, setDataStartRow] = useState<number>(1);
+  const [importMode, setImportMode] = useState<'timeline' | 'repeated_groups'>('timeline');
+  const [importSheetName, setImportSheetName] = useState('');
+  const [headerRow, setHeaderRow] = useState(1);
+  const [sourceGroupField, setSourceGroupField] = useState('source_group');
+  const [repeatGroups, setRepeatGroups] = useState<RepeatGroup[]>([
+    {
+      id: crypto.randomUUID(),
+      label: '',
+      skipWhenAllEmpty: true,
+      mappings: [{ id: crypto.randomUUID(), excelColumn: '', dbFieldName: '' }]
+    }
+  ]);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const importPreviewSignature = useRef('');
+  const [importing, setImporting] = useState(false);
   
   const [tableStatus, setTableStatus] = useState<{ type: 'success' | 'missing' | 'error'; text: string } | null>(null);
   const [checkingTable, setCheckingTable] = useState(false);
@@ -90,7 +135,6 @@ export const ExcelMappingSetup: React.FC = () => {
     skipSpace: 0,
   });
   const [skipHeaders, setSkipHeaders] = useState<string[]>([]);
-  const [newSkipInput, setNewSkipInput] = useState('');
   const [macroScript, setMacroScript] = useState<string>(DEFAULT_MACRO_TEMPLATE);
 
   // 初始掛載：從後端取得清單
@@ -146,7 +190,12 @@ useEffect(() => {
     setSkipHeaders([]);
     setTestInputs({});
     setDbFields([]);
-    setFilenameField(''); 
+    setFilenameField('');
+    setServerFileId('');
+    setWorkbookSheets([]);
+    setImportSheetName('');
+    setImportMode('timeline');
+    setImportPreview(null);
     setSelectedFile(null);
     setMacroScript(DEFAULT_MACRO_TEMPLATE); 
   } else {
@@ -163,7 +212,22 @@ useEffect(() => {
       
       // 1. 對應檔名欄位
       const resolvedFilename = targetObj.filename || targetObj.filepath || '';
-      setFilenameField(resolvedFilename); 
+      setFilenameField(resolvedFilename);
+      setServerFileId(targetObj.fileId || resolvedFilename);
+      setImportMode(targetObj.importMode === 'repeated_groups' ? 'repeated_groups' : 'timeline');
+      setImportSheetName(targetObj.sheetName || '');
+      setHeaderRow(targetObj.headerRow || 1);
+      setSourceGroupField(targetObj.sourceGroupField || 'source_group');
+      if (Array.isArray(targetObj.repeatGroups) && targetObj.repeatGroups.length > 0) {
+        setRepeatGroups(targetObj.repeatGroups.map((group: any) => ({
+          id: crypto.randomUUID(),
+          label: group.label || '',
+          skipWhenAllEmpty: group.skipWhenAllEmpty !== false,
+          mappings: (group.mappings || []).map((mapping: any) => ({
+            id: crypto.randomUUID(), excelColumn: mapping.excelColumn || '', dbFieldName: mapping.dbFieldName || ''
+          }))
+        })));
+      }
 
       // 2. 自動載入從 xlsx2dbsetL2 關聯過來的固定維度欄位對應清單
       if (targetObj.rowHeaders && targetObj.rowHeaders.length > 0) {
@@ -218,9 +282,21 @@ setTimeline({
       });
       const result = await response.json();
       if (response.ok && result.success) {
-        // 上傳成功後以伺回傳的路徑/檔名更新
-        if (result.fileName || result.filePath) {
-          setFilenameField(result.fileName || result.filePath);
+        setServerFileId(result.fileId);
+        setFilenameField(result.fileId);
+        const infoResponse = await fetch('http://localhost:3000/api/spreadsheet/workbook-info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileId: result.fileId })
+        });
+        const info = await infoResponse.json();
+        if (!infoResponse.ok || !info.success) throw new Error(info.message || '無法讀取工作表清單');
+        setWorkbookSheets(info.sheets || []);
+        const firstSheet = (info.sheets || []).find((sheet: WorkbookSheetInfo) => !sheet.hidden) || info.sheets?.[0];
+        if (firstSheet) {
+          setImportSheetName(firstSheet.name);
+          setSheetMode('name');
+          setSheetValue(firstSheet.name);
         }
         alert('🟢 範本 Excel 檔案上傳成功並已同步更新檔名！');
       } else {
@@ -230,6 +306,118 @@ setTimeline({
       alert(`❌ 無法連線至伺服器進行上傳: ${error.message}`);
     } finally {
       setUploadingFile(false);
+    }
+  };
+
+  const addRepeatGroup = () => {
+    setRepeatGroups(groups => [...groups, {
+      id: crypto.randomUUID(),
+      label: '',
+      skipWhenAllEmpty: true,
+      mappings: [{ id: crypto.randomUUID(), excelColumn: '', dbFieldName: '' }]
+    }]);
+  };
+
+  const updateRepeatGroup = (groupId: string, patch: Partial<RepeatGroup>) => {
+    setRepeatGroups(groups => groups.map(group => group.id === groupId ? { ...group, ...patch } : group));
+  };
+
+  const removeRepeatGroup = (groupId: string) => {
+    setRepeatGroups(groups => groups.length === 1 ? groups : groups.filter(group => group.id !== groupId));
+  };
+
+  const addRepeatMapping = (groupId: string) => {
+    setRepeatGroups(groups => groups.map(group => group.id === groupId
+      ? { ...group, mappings: [...group.mappings, { id: crypto.randomUUID(), excelColumn: '', dbFieldName: '' }] }
+      : group));
+  };
+
+  const updateRepeatMapping = (groupId: string, mappingId: string, patch: Partial<RepeatGroupMapping>) => {
+    setRepeatGroups(groups => groups.map(group => group.id === groupId
+      ? { ...group, mappings: group.mappings.map(mapping => mapping.id === mappingId ? { ...mapping, ...patch } : mapping) }
+      : group));
+  };
+
+  const removeRepeatMapping = (groupId: string, mappingId: string) => {
+    setRepeatGroups(groups => groups.map(group => group.id === groupId && group.mappings.length > 1
+      ? { ...group, mappings: group.mappings.filter(mapping => mapping.id !== mappingId) }
+      : group));
+  };
+
+  const buildRepeatedImportPayload = (dryRun: boolean) => {
+    if (!serverFileId) throw new Error('請先上傳 Excel 檔案');
+    if (!importSheetName) throw new Error('請選擇工作表');
+    if (!targetTable.trim()) throw new Error('請輸入目標資料表');
+    if (!sourceGroupField.trim()) throw new Error('請輸入群組來源 DB 欄位');
+
+    const fixedMappings = rowHeaders
+      .filter(mapping => mapping.excelColumn.trim() && mapping.dbFieldName.trim())
+      .map(({ excelColumn, dbFieldName, isGrouped, filterType, filterExpression }) => ({
+        excelColumn: excelColumn.toUpperCase().trim(), dbFieldName: dbFieldName.trim(), isGrouped, filterType, filterExpression
+      }));
+    const normalizedGroups = repeatGroups.map(group => ({
+      label: group.label.trim(),
+      skipWhenAllEmpty: group.skipWhenAllEmpty,
+      mappings: group.mappings
+        .filter(mapping => mapping.excelColumn.trim() && mapping.dbFieldName.trim())
+        .map(mapping => ({ excelColumn: mapping.excelColumn.toUpperCase().trim(), dbFieldName: mapping.dbFieldName.trim() }))
+    }));
+    if (normalizedGroups.some(group => !group.label || group.mappings.length === 0)) {
+      throw new Error('每個重複欄組都必須有標籤與至少一組欄位對應');
+    }
+
+    return {
+      fileId: serverFileId,
+      sheetName: importSheetName,
+      headerRow,
+      dataStartRow,
+      sourceGroupField: sourceGroupField.trim(),
+      fixedMappings,
+      repeatGroups: normalizedGroups,
+      targetTable: targetTable.trim(),
+      dbConfig: { host: dbHost, user: dbUser, password: dbPassword },
+      dryRun
+    };
+  };
+
+  const executeRepeatedImport = async (dryRun: boolean) => {
+    setImporting(true);
+    try {
+      const payload = buildRepeatedImportPayload(dryRun);
+      const signature = JSON.stringify({ ...payload, dryRun: false });
+      if (!dryRun && signature !== importPreviewSignature.current) {
+        throw new Error('匯入設定已變更，請重新執行預覽匯入');
+      }
+      const response = await fetch('http://localhost:3000/api/spreadsheet/import-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.message || '匯入失敗');
+      if (dryRun) {
+        importPreviewSignature.current = signature;
+        setImportPreview(result);
+      }
+      else {
+        alert(`匯入完成，新增 ${result.insertedCount} 筆資料。`);
+        importPreviewSignature.current = '';
+        setImportPreview(null);
+      }
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleRunRepeatedImport = () => {
+    if (!importPreview) {
+      alert('請先執行預覽匯入');
+      return;
+    }
+    if (window.confirm(`確定追加 ${importPreview.outputCount} 筆資料至 ${targetTable}？`)) {
+      void executeRepeatedImport(false);
     }
   };
 
@@ -265,9 +453,6 @@ setTimeline({
   const handleRemoveRowHeader = (id: string) => setRowHeaders(rowHeaders.filter(row => row.id !== id));
   const handleUpdateRowHeader = (id: string, key: keyof RowHeaderMapping, value: any) => setRowHeaders(rowHeaders.map(row => row.id === id ? { ...row, [key]: value } : row));
   const handleUpdateTimeline = (key: string, value: any) => setTimeline(prev => ({ ...prev, [key]: value }));
-  const handleAddSkipHeader = () => { if (newSkipInput.trim() && !skipHeaders.includes(newSkipInput.trim())) { setSkipHeaders([...skipHeaders, newSkipInput.trim()]); setNewSkipInput(''); } };
-  const handleRemoveSkipHeader = (header: string) => setSkipHeaders(skipHeaders.filter(h => h !== header));
-
   const checkRegexMatch = (pattern: string, testValue: string) => {
     if (!pattern) return { valid: true, match: false };
     try {
@@ -313,12 +498,19 @@ setTimeline({
   };
 
   const handleOpenCreateModal = () => {
-    const activeFields = [
+    const repeatedFields = [
+      ...rowHeaders.filter(r => r.dbFieldName).map(r => r.dbFieldName),
+      sourceGroupField,
+      ...repeatGroups.flatMap(group => group.mappings.map(mapping => mapping.dbFieldName))
+    ];
+    const timelineFields = [
       ...rowHeaders.filter(r => r.dbFieldName).map(r => r.dbFieldName),
       timeline.dbYearField,
       timeline.dbItemField,
       timeline.dbValueField
-    ].filter((v, i, self) => v && self.indexOf(v) === i);
+    ];
+    const activeFields = (importMode === 'repeated_groups' ? repeatedFields : timelineFields)
+      .filter((v, i, self) => v && self.indexOf(v) === i);
 
     const initialPreview: DbField[] = activeFields.length > 0
       ? activeFields.map(name => {
@@ -394,6 +586,19 @@ setTimeline({
       sheetMode: sheetMode,
       sheetValue: sheetValue,
       filename: filenameField.trim(), // 傳送資料庫對應的 filename 欄位值
+      fileId: serverFileId,
+      importMode,
+      sheetName: importSheetName,
+      headerRow,
+      fixedMappings: rowHeaders.map(({ excelColumn, dbFieldName, isGrouped, filterType, filterExpression }) => ({
+        excelColumn, dbFieldName, isGrouped, filterType, filterExpression
+      })),
+      repeatGroups: repeatGroups.map(group => ({
+        label: group.label,
+        skipWhenAllEmpty: group.skipWhenAllEmpty,
+        mappings: group.mappings.map(({ excelColumn, dbFieldName }) => ({ excelColumn, dbFieldName }))
+      })),
+      sourceGroupField,
       dbConfig: { host: dbHost, user: dbUser }, 
       rowHeaders: rowHeaders.map(({ excelColumn, dbFieldName, isGrouped, filterType, filterExpression }) => ({
         excelColumn, dbFieldName, isGrouped, filterType, filterExpression
@@ -424,6 +629,9 @@ setTimeline({
 
   return (
     <div className="w-full text-slate-800 p-2 max-w-7xl mx-auto font-sans bg-white">
+      <datalist id="db-field-options">
+        {dbFields.map(field => <option key={field.name} value={field.name}>{field.type}</option>)}
+      </datalist>
       
       {/* Master Top Header with Combined Dropdown Selection */}
       <div className="mb-6 border-b border-gray-200 pb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -551,7 +759,7 @@ setTimeline({
             <div className="flex gap-2">
               <input 
                 type="file" 
-                accept=".xlsx, .xls" 
+                accept=".xlsx,.xlsm,.xls"
                 onChange={handleFileChange} 
                 className="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-2 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 file:cursor-pointer hover:file:bg-blue-100"
               />
@@ -564,6 +772,7 @@ setTimeline({
                 {uploadingFile ? '⏳...' : '上傳'}
               </button>
             </div>
+            {serverFileId && <p className="mt-1 text-[11px] text-blue-700 font-mono">File ID: {serverFileId}</p>}
           </div>
         </div>
       </div>
@@ -571,6 +780,22 @@ setTimeline({
       {/* 📋 步驟 2：工作表 (Worksheet) 與目標資料庫 */}
       <div className="bg-gray-50 p-6 rounded-xl border border-gray-200 mb-6">
         <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-4">⚙️ 步驟 2：工作表 (Worksheet) 與目標資料庫</h3>
+        <div className="inline-flex border border-slate-300 rounded-md overflow-hidden mb-4" role="group" aria-label="Import mode">
+          <button
+            type="button"
+            onClick={() => setImportMode('timeline')}
+            className={`px-4 py-2 text-xs font-bold ${importMode === 'timeline' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}
+          >
+            Timeline Matrix
+          </button>
+          <button
+            type="button"
+            onClick={() => setImportMode('repeated_groups')}
+            className={`px-4 py-2 text-xs font-bold border-l border-slate-300 ${importMode === 'repeated_groups' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}
+          >
+            Repeated Groups
+          </button>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-1">本機 MSSQL Table Name (dbname)</label>
@@ -630,11 +855,26 @@ setTimeline({
 
           <div className="md:col-span-2 border-t border-gray-200 pt-3 mt-1">
             <label className="block text-sm font-semibold text-gray-700 mb-1">Excel 指定工作表 (sheet)</label>
-            <div className="flex gap-6 my-2 text-sm">
-              <label className="inline-flex items-center cursor-pointer"><input type="radio" className="mr-2" checked={sheetMode === 'index'} onChange={() => { setSheetMode('index'); setSheetValue(1); }} /> 依分頁順序 (Index)</label>
-              <label className="inline-flex items-center cursor-pointer"><input type="radio" className="mr-2" checked={sheetMode === 'name'} onChange={() => { setSheetMode('name'); setSheetValue(''); }} /> 依分頁名稱 (Sheet Name)</label>
-            </div>
-            <input type={sheetMode === 'index' ? 'number' : 'text'} value={sheetValue} onChange={e => setSheetValue(e.target.value)} className="w-full md:w-1/2 p-2 border border-gray-300 rounded-md bg-white" />
+            {importMode === 'timeline' ? (
+              <>
+                <div className="flex gap-6 my-2 text-sm">
+                  <label className="inline-flex items-center cursor-pointer"><input type="radio" className="mr-2" checked={sheetMode === 'index'} onChange={() => { setSheetMode('index'); setSheetValue(1); }} /> 依分頁順序 (Index)</label>
+                  <label className="inline-flex items-center cursor-pointer"><input type="radio" className="mr-2" checked={sheetMode === 'name'} onChange={() => { setSheetMode('name'); setSheetValue(''); }} /> 依分頁名稱 (Sheet Name)</label>
+                </div>
+                <input type={sheetMode === 'index' ? 'number' : 'text'} value={sheetValue} onChange={e => setSheetValue(e.target.value)} className="w-full md:w-1/2 p-2 border border-gray-300 rounded-md bg-white" />
+              </>
+            ) : (
+              <select
+                value={importSheetName}
+                onChange={e => setImportSheetName(e.target.value)}
+                className="w-full md:w-1/2 p-2 border border-gray-300 rounded-md bg-white"
+              >
+                <option value="">-- 請先上傳檔案 --</option>
+                {workbookSheets.map(sheet => (
+                  <option key={sheet.sheetId} value={sheet.name}>{sheet.name}{sheet.hidden ? ' (hidden)' : ''} - {sheet.rowCount} rows</option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
       </div>
@@ -666,10 +906,7 @@ setTimeline({
                     </td>
                     <td className="p-2 text-center text-gray-400">➡️</td>
                     <td className="p-2">
-                      <select value={row.dbFieldName} onChange={e => handleUpdateRowHeader(row.id, 'dbFieldName', e.target.value)} className="w-full p-1.5 border border-gray-300 rounded bg-white text-sm font-mono">
-                        <option value="">-- 請選擇 --</option>
-                        {dbFields.map(f => (<option key={f.name} value={f.name}>{f.name} ({f.type})</option>))}
-                      </select>
+                      <input list="db-field-options" value={row.dbFieldName} onChange={e => handleUpdateRowHeader(row.id, 'dbFieldName', e.target.value)} className="w-full p-1.5 border border-gray-300 rounded bg-white text-sm font-mono" placeholder="DB field" />
                     </td>
                     <td className="p-2">
                       <label className="inline-flex items-center text-xs text-gray-600 bg-white p-1.5 border border-gray-200 rounded w-full cursor-pointer select-none">
@@ -727,7 +964,7 @@ setTimeline({
       </div>
 
      {/* 📋 步驟 4：動態時間與項目軸設定 */}
-<div className="bg-gray-50 p-6 rounded-xl border border-gray-200 mb-6 font-sans">
+<div className={`${importMode === 'timeline' ? 'block' : 'hidden'} bg-gray-50 p-6 rounded-xl border border-gray-200 mb-6 font-sans`}>
   <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-2">⚡ 步驟 4：動態時間與項目軸設定 (xlsx2dbsetL3)</h3>
   <p className="text-xs text-gray-500 mb-4">設定矩陣範圍的起迄欄位、年份列、項目列以及空間跳過設定。</p>
 
@@ -801,8 +1038,97 @@ setTimeline({
   </div>
 </div>
 
+      {importMode === 'repeated_groups' && (
+        <div className="bg-gray-50 p-6 rounded-xl border border-gray-200 mb-6 font-sans">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 pb-3 mb-4">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3">⚡ 步驟 4：重複欄組展開設定</h3>
+              <p className="text-xs text-gray-500 mt-1">每個來源列會依群組展開成多筆資料。</p>
+            </div>
+            <button type="button" onClick={addRepeatGroup} className="px-3 py-2 text-xs font-bold bg-slate-700 text-white rounded hover:bg-slate-800">+ 新增群組</button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+            <label className="text-sm font-semibold text-gray-700">
+              欄名列
+              <input type="number" min={1} value={headerRow} onChange={e => setHeaderRow(Number(e.target.value))} className="mt-1 w-full p-2 border border-gray-300 rounded bg-white" />
+            </label>
+            <label className="text-sm font-semibold text-gray-700">
+              群組來源 DB 欄位
+              <input value={sourceGroupField} onChange={e => setSourceGroupField(e.target.value)} className="mt-1 w-full p-2 border border-gray-300 rounded bg-white font-mono" placeholder="source_group" />
+            </label>
+          </div>
+
+          <div className="divide-y divide-gray-300 border-y border-gray-300">
+            {repeatGroups.map(group => (
+              <div key={group.id} className="py-4">
+                <div className="flex flex-wrap items-center gap-3 mb-3">
+                  <input
+                    value={group.label}
+                    onChange={e => updateRepeatGroup(group.id, { label: e.target.value })}
+                    className="flex-1 min-w-48 p-2 border border-gray-300 rounded bg-white font-mono"
+                    placeholder="Group label, e.g. Current"
+                  />
+                  <label className="inline-flex items-center gap-2 text-xs text-gray-600">
+                    <input type="checkbox" checked={group.skipWhenAllEmpty} onChange={e => updateRepeatGroup(group.id, { skipWhenAllEmpty: e.target.checked })} />
+                    整組空白時跳過
+                  </label>
+                  <button type="button" onClick={() => removeRepeatGroup(group.id)} disabled={repeatGroups.length === 1} className="w-8 h-8 text-red-600 border border-red-200 rounded disabled:opacity-40" title="Remove group">×</button>
+                </div>
+
+                <div className="space-y-2">
+                  {group.mappings.map(mapping => (
+                    <div key={mapping.id} className="grid grid-cols-[90px_24px_minmax(180px,1fr)_36px] gap-2 items-center">
+                      <input value={mapping.excelColumn} onChange={e => updateRepeatMapping(group.id, mapping.id, { excelColumn: e.target.value.toUpperCase() })} className="p-2 border border-gray-300 rounded uppercase font-mono" placeholder="AJ" />
+                      <span className="text-center text-gray-400">→</span>
+                      <input list="db-field-options" value={mapping.dbFieldName} onChange={e => updateRepeatMapping(group.id, mapping.id, { dbFieldName: e.target.value })} className="p-2 border border-gray-300 rounded bg-white font-mono text-sm" placeholder="DB field" />
+                      <button type="button" onClick={() => removeRepeatMapping(group.id, mapping.id)} disabled={group.mappings.length === 1} className="w-8 h-8 text-red-600 border border-red-200 rounded disabled:opacity-40" title="Remove mapping">×</button>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" onClick={() => addRepeatMapping(group.id)} className="mt-3 px-3 py-1.5 text-xs font-bold text-blue-700 border border-blue-200 bg-blue-50 rounded hover:bg-blue-100">+ 新增群組欄位</button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex justify-end gap-2 mt-5">
+            <button type="button" onClick={() => void executeRepeatedImport(true)} disabled={importing} className="px-4 py-2 text-xs font-bold border border-slate-400 bg-white text-slate-700 rounded disabled:opacity-50">
+              {importing ? '處理中...' : '預覽匯入'}
+            </button>
+            <button type="button" onClick={handleRunRepeatedImport} disabled={importing || !importPreview} className="px-4 py-2 text-xs font-bold bg-emerald-700 text-white rounded disabled:opacity-50">
+              執行追加匯入
+            </button>
+          </div>
+
+          {importPreview && (
+            <div className="mt-5 border-t border-gray-300 pt-4">
+              <div className="flex flex-wrap gap-4 text-xs font-semibold text-slate-700 mb-3">
+                <span>輸出：{importPreview.outputCount}</span>
+                <span>跳過列：{importPreview.skippedRowCount}</span>
+                <span>跳過空群組：{importPreview.skippedGroupCount}</span>
+              </div>
+              {importPreview.warnings.map((warning, index) => <p key={index} className="text-xs text-amber-700 mb-1">{warning}</p>)}
+              <div className="overflow-auto max-h-80 border border-gray-300">
+                <table className="min-w-full text-xs bg-white">
+                  <thead className="sticky top-0 bg-slate-100">
+                    <tr>{Object.keys(importPreview.preview[0] || {}).map(key => <th key={key} className="p-2 text-left border-b border-gray-300 whitespace-nowrap">{key}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {importPreview.preview.map((row, index) => (
+                      <tr key={index} className="border-b border-gray-100">
+                        {Object.keys(importPreview.preview[0] || {}).map(key => <td key={key} className="p-2 whitespace-nowrap">{String(row[key] ?? '')}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 🌟 步驟 5：自訂 JavaScript 巨集控制台 */}
-      <div className="bg-slate-50 p-6 rounded-xl border border-slate-200 mb-6 shadow-sm">
+      <div className={`${importMode === 'timeline' ? 'block' : 'hidden'} bg-slate-50 p-6 rounded-xl border border-slate-200 mb-6 shadow-sm`}>
         <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-4">
           <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
             <span className="text-amber-500">⚙️</span> 步驟 5：自訂 JavaScript 巨集指令碼控制台
