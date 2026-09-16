@@ -208,6 +208,397 @@ app.post('/api/spreadsheet/upload', uploadDisk.single('file'), (req, res) => {
 
 
 // ==========================================
+// 📚 Excel 檔案池 (Excel File Pool)
+//    實體目錄：專案根目錄下的 Excels/
+//    提供上傳、清單、下載、刪除四支 API 給 Like Excel List 頁面使用
+// ==========================================
+const excelPoolDirectory = path.join(__dirname, '..', 'Excels');
+if (!fs.existsSync(excelPoolDirectory)) {
+    fs.mkdirSync(excelPoolDirectory, { recursive: true });
+}
+
+const ALLOWED_EXCEL_EXT = ['.xlsx', '.xls', '.xlsm', '.xlsb', '.csv'];
+// ExcelJS 只讀得懂 OOXML 格式，舊版 .xls / .xlsb / .csv 無法在線上編輯器開啟
+const EDITABLE_EXCEL_EXT = ['xlsx', 'xlsm'];
+
+// 瀏覽器的 multipart 檔名為 UTF-8，但 busboy 預設以 latin1 解讀，
+// 中文檔名會變亂碼，這裡把它還原回來。
+function decodeOriginalName(name) {
+    try {
+        const decoded = Buffer.from(name, 'latin1').toString('utf8');
+        return decoded.includes('�') ? name : decoded;
+    } catch (e) {
+        return name;
+    }
+}
+
+// 防止 ../ 路徑穿越，只允許存取檔案池目錄下的檔案
+function resolvePoolFile(fileName) {
+    const safeName = path.basename(String(fileName || ''));
+    if (!safeName || safeName === '.' || safeName === '..') return null;
+    const fullPath = path.join(excelPoolDirectory, safeName);
+    if (path.dirname(fullPath) !== excelPoolDirectory) return null;
+    return fullPath;
+}
+
+// 同名檔案不覆蓋，改以 "檔名 (2).xlsx" 方式遞增
+function uniquePoolName(originalName) {
+    const safeName = path.basename(decodeOriginalName(originalName)).replace(/[\\/:*?"<>|]/g, '_');
+    const ext = path.extname(safeName);
+    const base = path.basename(safeName, ext);
+    let candidate = `${base}${ext}`;
+    let counter = 2;
+    while (fs.existsSync(path.join(excelPoolDirectory, candidate))) {
+        candidate = `${base} (${counter})${ext}`;
+        counter++;
+    }
+    return candidate;
+}
+
+const poolStorage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, excelPoolDirectory);
+    },
+    filename: function (req, file, cb) {
+        cb(null, uniquePoolName(file.originalname));
+    }
+});
+
+const uploadPool = multer({
+    storage: poolStorage,
+    limits: { fileSize: 50 * 1024 * 1024 },
+    fileFilter: function (req, file, cb) {
+        const ext = path.extname(decodeOriginalName(file.originalname)).toLowerCase();
+        if (!ALLOWED_EXCEL_EXT.includes(ext)) {
+            return cb(new Error(`不支援的檔案格式 ${ext}，僅接受 ${ALLOWED_EXCEL_EXT.join(' / ')}`));
+        }
+        cb(null, true);
+    }
+});
+
+// ------------------------------------------
+// 🏷️ 檔案顯示名稱 (Display Name) 中繼資料
+//    以 JSON 檔保存 { 實體檔名: { displayName, updatedAt } }，
+//    與實體檔名脫鉤，改名不影響下載網址與既有匯入流程。
+// ------------------------------------------
+const excelPoolMetaFile = path.join(__dirname, 'excel-pool-meta.json');
+
+function readPoolMeta() {
+    try {
+        if (!fs.existsSync(excelPoolMetaFile)) return {};
+        return JSON.parse(fs.readFileSync(excelPoolMetaFile, 'utf8')) || {};
+    } catch (err) {
+        console.error('⚠️ 讀取檔案池中繼資料失敗，改以空白設定繼續:', err.message);
+        return {};
+    }
+}
+
+function writePoolMeta(meta) {
+    fs.writeFileSync(excelPoolMetaFile, JSON.stringify(meta, null, 2), 'utf8');
+}
+
+// 沒有自訂名稱時，預設顯示為「去掉副檔名的檔名」
+function defaultDisplayName(fileName) {
+    return path.basename(fileName, path.extname(fileName));
+}
+
+// 上傳一個或多個 Excel 檔案進檔案池
+app.post('/api/excel-pool/upload', (req, res) => {
+    uploadPool.array('files', 20)(req, res, (err) => {
+        if (err) {
+            console.error('❌ Excel Pool 上傳失敗:', err.message);
+            return res.status(400).json({ success: false, message: err.message });
+        }
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ success: false, message: '未偵測到上傳檔案' });
+        }
+        const saved = req.files.map(f => ({
+            fileName: f.filename,
+            originalName: decodeOriginalName(f.originalname),
+            size: f.size
+        }));
+        console.log(`💾 已存入 Excel 檔案池 (${saved.length} 筆):`, saved.map(s => s.fileName).join(', '));
+        return res.json({ success: true, message: `成功上傳 ${saved.length} 個檔案`, files: saved });
+    });
+});
+
+// 取得檔案池內所有 Excel 檔案清單
+app.get('/api/excel-pool/list', (req, res) => {
+    try {
+        const meta = readPoolMeta();
+        const files = fs.readdirSync(excelPoolDirectory)
+            .filter(name => ALLOWED_EXCEL_EXT.includes(path.extname(name).toLowerCase()))
+            .map(name => {
+                const stat = fs.statSync(path.join(excelPoolDirectory, name));
+                const ext = path.extname(name).toLowerCase().replace('.', '');
+                return {
+                    fileName: name,
+                    displayName: (meta[name] && meta[name].displayName) || defaultDisplayName(name),
+                    ext: ext,
+                    editable: EDITABLE_EXCEL_EXT.includes(ext), // 僅 OOXML 格式可於線上編輯器開啟
+                    size: stat.size,
+                    uploadedAt: stat.mtime.toISOString()
+                };
+            })
+            .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+
+        return res.json({ success: true, count: files.length, files });
+    } catch (err) {
+        console.error('❌ 讀取 Excel 檔案池失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 修改單一檔案的顯示名稱 / 別名 (不更動實體檔名)
+app.patch('/api/excel-pool/:fileName/name', (req, res) => {
+    const fullPath = resolvePoolFile(req.params.fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    }
+
+    const displayName = String((req.body && req.body.displayName) || '').trim();
+    if (!displayName) {
+        return res.status(400).json({ success: false, message: '名稱不可空白' });
+    }
+    if (displayName.length > 120) {
+        return res.status(400).json({ success: false, message: '名稱長度不可超過 120 個字元' });
+    }
+
+    try {
+        const fileName = path.basename(fullPath);
+        const meta = readPoolMeta();
+        meta[fileName] = { displayName, updatedAt: new Date().toISOString() };
+        writePoolMeta(meta);
+        console.log(`🏷️ 已更新檔案顯示名稱: ${fileName} → ${displayName}`);
+        return res.json({ success: true, message: '名稱已更新', fileName, displayName });
+    } catch (err) {
+        console.error('❌ 更新檔案顯示名稱失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 開啟檔案池中的檔案，轉成 Syncfusion Spreadsheet 可載入的 JSON
+app.get('/api/excel-pool/open/:fileName', async (req, res) => {
+    const fullPath = resolvePoolFile(req.params.fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    }
+
+    const fileName = path.basename(fullPath);
+    const ext = path.extname(fileName).toLowerCase().replace('.', '');
+    if (!EDITABLE_EXCEL_EXT.includes(ext)) {
+        return res.status(400).json({
+            success: false,
+            message: `.${ext} 格式無法於線上編輯器開啟，請先下載並另存為 .xlsx 後再上傳`
+        });
+    }
+
+    try {
+        const { result, sheetCount, sheetNames } = await excelBufferToSpreadsheetJson(fs.readFileSync(fullPath));
+        const meta = readPoolMeta();
+        console.log(`📖 已開啟檔案池檔案: ${fileName} (共 ${sheetCount} 個工作表)`);
+        return res.json({
+            success: true,
+            fileName,
+            displayName: (meta[fileName] && meta[fileName].displayName) || defaultDisplayName(fileName),
+            sheetCount,
+            sheetNames,
+            // 線上編輯器只載入第一個工作表，因此只有「單一工作表的 .xlsx」覆蓋回存才不會遺失內容
+            canOverwrite: ext === 'xlsx' && sheetCount === 1,
+            jsonObject: JSON.stringify(result)
+        });
+    } catch (err) {
+        console.error('❌ 開啟檔案池檔案失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// ------------------------------------------
+// 💾 將 Syncfusion Spreadsheet JSON 還原為 ExcelJS 活頁簿 (保留基本樣式)
+// ------------------------------------------
+function spreadsheetJsonToWorkbook(workbookJson, sheetName) {
+    const workbook = new ExcelJS.Workbook();
+    const sourceSheet = (workbookJson.sheets && workbookJson.sheets[0]) || {};
+    const worksheet = workbook.addWorksheet(sheetName || sourceSheet.name || 'Sheet1');
+
+    const sourceRows = Array.isArray(sourceSheet.rows) ? sourceSheet.rows : Object.values(sourceSheet.rows || {});
+    const merges = [];
+
+    sourceRows.forEach((row, rowIdx) => {
+        if (!row) return;
+        const targetRow = worksheet.getRow(rowIdx + 1);
+        if (row.height) targetRow.height = row.height / 1.33;
+
+        const cells = Array.isArray(row.cells) ? row.cells : Object.values(row.cells || {});
+        cells.forEach((cell, colIdx) => {
+            if (!cell) return;
+            const targetCell = targetRow.getCell(colIdx + 1);
+
+            // 值：公式優先，數字字串還原為數值，避免回寫後全部變成文字
+            if (cell.formula) {
+                targetCell.value = { formula: String(cell.formula).replace(/^=/, '') };
+            } else if (cell.value !== undefined && cell.value !== null && cell.value !== '') {
+                const raw = cell.value;
+                const asNumber = Number(raw);
+                targetCell.value = (typeof raw !== 'boolean' && String(raw).trim() !== '' && !Number.isNaN(asNumber))
+                    ? asNumber
+                    : raw;
+            }
+
+            const style = cell.style || {};
+            const font = {};
+            if (style.fontWeight === 'bold') font.bold = true;
+            if (style.fontStyle === 'italic') font.italic = true;
+            if (style.fontSize) font.size = parseFloat(style.fontSize);
+            if (style.color) font.color = { argb: `FF${String(style.color).replace('#', '')}` };
+            if (Object.keys(font).length > 0) targetCell.font = font;
+
+            if (style.backgroundColor) {
+                targetCell.fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: `FF${String(style.backgroundColor).replace('#', '')}` }
+                };
+            }
+
+            const alignment = {};
+            if (style.textAlign) alignment.horizontal = style.textAlign;
+            if (style.verticalAlign) alignment.vertical = style.verticalAlign;
+            if (style.wrap) alignment.wrapText = true;
+            if (Object.keys(alignment).length > 0) targetCell.alignment = alignment;
+
+            const border = {};
+            ['Top', 'Bottom', 'Left', 'Right'].forEach(side => {
+                if (style[`border${side}`]) border[side.toLowerCase()] = { style: 'thin', color: { argb: 'FF000000' } };
+            });
+            if (Object.keys(border).length > 0) targetCell.border = border;
+
+            // 合併儲存格：以 rowSpan / colSpan 還原
+            const rowSpan = cell.rowSpan || 1;
+            const colSpan = cell.colSpan || 1;
+            if (rowSpan > 1 || colSpan > 1) {
+                merges.push([rowIdx + 1, colIdx + 1, rowIdx + rowSpan - 1, colIdx + colSpan]);
+            }
+        });
+        targetRow.commit();
+    });
+
+    const sourceColumns = Array.isArray(sourceSheet.columns) ? sourceSheet.columns : [];
+    sourceColumns.forEach((col, idx) => {
+        if (col && col.width) worksheet.getColumn(idx + 1).width = col.width / 7;
+    });
+
+    merges.forEach(range => {
+        try {
+            worksheet.mergeCells(range[0], range[1], range[2], range[3]);
+        } catch (e) {
+            // 重疊或無效的合併範圍直接略過，不中斷整份檔案的回存
+        }
+    });
+
+    return workbook;
+}
+
+// 將線上編輯器的內容回存至檔案池 (覆蓋原檔或另存新檔)
+app.post('/api/excel-pool/save', async (req, res) => {
+    const { fileName, mode, spreadsheetData } = req.body || {};
+    const fullPath = resolvePoolFile(fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到來源檔案' });
+    }
+
+    const workbookJson = spreadsheetData && (spreadsheetData.Workbook || spreadsheetData);
+    if (!workbookJson || !workbookJson.sheets || workbookJson.sheets.length === 0) {
+        return res.status(400).json({ success: false, message: '無效的試算表資料結構' });
+    }
+
+    const sourceName = path.basename(fullPath);
+    const ext = path.extname(sourceName).toLowerCase();
+
+    try {
+        let targetName = sourceName;
+
+        if (mode === 'overwrite') {
+            // 編輯器只載入第一個工作表，覆蓋多工作表或含巨集的檔案會造成內容遺失，因此擋下
+            if (ext !== '.xlsx') {
+                return res.status(400).json({
+                    success: false,
+                    message: `${ext} 檔案不支援覆蓋回存 (會遺失巨集或原始格式)，請改用另存新檔`
+                });
+            }
+            const existing = new ExcelJS.Workbook();
+            await existing.xlsx.readFile(fullPath);
+            if (existing.worksheets.length > 1) {
+                return res.status(400).json({
+                    success: false,
+                    message: `原檔含 ${existing.worksheets.length} 個工作表，但編輯器只載入第一個，覆蓋會遺失其餘工作表，請改用另存新檔`
+                });
+            }
+        } else {
+            const now = new Date();
+            const pad = (n) => String(n).padStart(2, '0');
+            const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+            targetName = uniquePoolName(`${path.basename(sourceName, ext)} (編輯 ${stamp}).xlsx`);
+        }
+
+        const workbook = spreadsheetJsonToWorkbook(workbookJson, workbookJson.sheets[0].name);
+        await workbook.xlsx.writeFile(path.join(excelPoolDirectory, targetName));
+
+        // 另存新檔時，沿用原檔的別名作為新檔別名的基礎
+        if (targetName !== sourceName) {
+            const meta = readPoolMeta();
+            const baseName = (meta[sourceName] && meta[sourceName].displayName) || defaultDisplayName(sourceName);
+            meta[targetName] = { displayName: `${baseName} (編輯版)`, updatedAt: new Date().toISOString() };
+            writePoolMeta(meta);
+        }
+
+        console.log(`💾 編輯內容已回存至檔案池: ${targetName} (mode=${mode || 'new'})`);
+        return res.json({
+            success: true,
+            message: mode === 'overwrite' ? '已覆蓋原檔' : `已另存為「${targetName}」`,
+            fileName: targetName
+        });
+    } catch (err) {
+        console.error('❌ 回存檔案池失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 下載 / 開啟檔案池中的單一檔案
+app.get('/api/excel-pool/download/:fileName', (req, res) => {
+    const fullPath = resolvePoolFile(req.params.fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    }
+    return res.download(fullPath, path.basename(fullPath));
+});
+
+// 從檔案池刪除單一檔案
+app.delete('/api/excel-pool/:fileName', (req, res) => {
+    const fullPath = resolvePoolFile(req.params.fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    }
+    try {
+        const fileName = path.basename(fullPath);
+        fs.unlinkSync(fullPath);
+
+        // 一併清掉別名設定，避免同名檔案重新上傳時沿用到舊別名
+        const meta = readPoolMeta();
+        if (meta[fileName]) {
+            delete meta[fileName];
+            writePoolMeta(meta);
+        }
+        console.log(`🗑️ 已從 Excel 檔案池刪除: ${fileName}`);
+        return res.json({ success: true, message: '檔案已刪除' });
+    } catch (err) {
+        console.error('❌ 刪除檔案失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+
+// ==========================================
 // 🌟 擴充新增路由 0-B：動態測試資料庫環境連線狀態
 // ==========================================
 app.post('/api/spreadsheet/test-connection', async (req, res) => {
@@ -260,6 +651,121 @@ function fixColor(colorObj) {
     return undefined;
 };
 
+// ==========================================
+// 🔄 共用轉換器：ExcelJS 活頁簿 Buffer → Syncfusion Spreadsheet JSON
+//    (由 /api/spreadsheet/open 與 Excel 檔案池的 open 路由共用)
+// ==========================================
+async function excelBufferToSpreadsheetJson(fileBuffer) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(fileBuffer);
+    const worksheet = workbook.getWorksheet(1);
+
+    // 🛡️ 決定全域的最大欄位數基準（至少 26 欄，或依工作表實際最大欄位而定）
+    const maxColCount = Math.max(worksheet.columnCount || 0, 26);
+
+    let formattedRows = [];
+    worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+        let cells = [];
+        
+        // 🛡️ 改用絕對迴圈讀取每一欄，確保 cells 陣列索引 1 對 1 絕對不會位移
+        for (let c = 1; c <= maxColCount; c++) {
+            const cell = row.getCell(c);
+            const cellObj = {
+                formula: cell.formula ? `=${cell.formula}` : undefined,
+                style: {}
+            };
+
+            // 🎨 安全處理：將 richText 陣列合併為純文字字串，避免格式崩潰或出現 [object Object]
+            if (cell.value && typeof cell.value === 'object' && Array.isArray(cell.value.richText)) {
+                cellObj.value = cell.value.richText.map(rt => rt.text || '').join('');
+            } else {
+                cellObj.value = parseCellValue(cell.value);
+            }
+
+            if (cell.font) {
+                if (cell.font.bold) cellObj.style.fontWeight = 'bold';
+                if (cell.font.italic) cellObj.style.fontStyle = 'italic';
+                if (cell.font.size) cellObj.style.fontSize = `${cell.font.size}pt`;
+                const fColor = fixColor(cell.font.color);
+                if (fColor) cellObj.style.color = fColor;
+            }
+
+            if (cell.fill && cell.fill.fgColor) {
+                const bColor = fixColor(cell.fill.fgColor);
+                if (bColor) cellObj.style.backgroundColor = bColor;
+            }
+
+            if (cell.border) {
+                if (cell.border.top) cellObj.style.borderTop = "1px solid #000000";
+                if (cell.border.bottom) cellObj.style.borderBottom = "1px solid #000000";
+                if (cell.border.left) cellObj.style.borderLeft = "1px solid #000000";
+                if (cell.border.right) cellObj.style.borderRight = "1px solid #000000";
+            }
+
+            if (cell.alignment) {
+                if (cell.alignment.horizontal) cellObj.style.textAlign = cell.alignment.horizontal;
+                if (cell.alignment.vertical) {
+                    cellObj.style.verticalAlign = cell.alignment.vertical === 'middle' ? 'middle' : cell.alignment.vertical;
+                }
+                if (cell.alignment.wrapText) cellObj.style.wrap = true;
+            }
+
+            cells[c - 1] = cellObj;
+        }
+
+        formattedRows[rowNumber - 1] = { cells: cells, height: row.height ? row.height * 1.33 : 20 };
+    });
+
+    // 🛡️ 建立對應的欄位寬度陣列
+    const columns = [];
+    for (let c = 1; c <= maxColCount; c++) {
+        const col = worksheet.getColumn(c);
+        columns.push({ width: col.width ? col.width * 7 : 64 });
+    }
+
+   if (worksheet._merges) {
+        Object.values(worksheet._merges).forEach(merge => {
+            const { top, left, bottom, right } = merge;
+            const masterRow = formattedRows[top - 1];
+            if (masterRow && masterRow.cells[left - 1]) {
+                const masterCell = masterRow.cells[left - 1];
+                masterCell.rowSpan = (bottom - top) + 1;
+                masterCell.colSpan = (right - left) + 1;
+
+                // 🛡️ 確保合併儲存格的每一個子儲存格都有完整的邊框，防止線條缺損
+                for (let r = top; r <= bottom; r++) {
+                    for (let c = left; c <= right; c++) {
+                        if (formattedRows[r - 1] && formattedRows[r - 1].cells[c - 1]) {
+                            const targetCell = formattedRows[r - 1].cells[c - 1];
+                            if (!targetCell.style) targetCell.style = {};
+
+                            // 針對合併區塊的邊界補上框線，確保四周與格線完整
+                            if (r === top) targetCell.style.borderTop = "1px solid #000000";
+                            if (r === bottom) targetCell.style.borderBottom = "1px solid #000000";
+                            if (c === left) targetCell.style.borderLeft = "1px solid #000000";
+                            if (c === right) targetCell.style.borderRight = "1px solid #000000";
+
+                            // 除了左上角主格保留內容外，其餘被合併涵蓋的格子清空值
+                            if (r !== top || c !== left) {
+                                targetCell.value = "";
+                                targetCell.formula = undefined;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+
+    const result = { Workbook: { sheets: [{ name: worksheet.name, rows: formattedRows, columns: columns }] } };
+    return {
+        result,
+        sheetCount: workbook.worksheets.length,
+        sheetNames: workbook.worksheets.map(ws => ws.name)
+    };
+}
+
 app.post('/api/spreadsheet/open', uploadMemory.single('file'), async (req, res) => {
     console.log("-----------------------------------------");
     console.log("🚀 [DEBUG] 收到請求 URL:", req.url);
@@ -288,108 +794,7 @@ app.post('/api/spreadsheet/open', uploadMemory.single('file'), async (req, res) 
             return res.status(400).send("No file uploaded or file path provided");
         }
 
-        const workbook = new ExcelJS.Workbook();
-        await workbook.xlsx.load(fileBuffer);
-        const worksheet = workbook.getWorksheet(1);
-
-        // 🛡️ 決定全域的最大欄位數基準（至少 26 欄，或依工作表實際最大欄位而定）
-        const maxColCount = Math.max(worksheet.columnCount || 0, 26);
-
-        let formattedRows = [];
-        worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
-            let cells = [];
-            
-            // 🛡️ 改用絕對迴圈讀取每一欄，確保 cells 陣列索引 1 對 1 絕對不會位移
-            for (let c = 1; c <= maxColCount; c++) {
-                const cell = row.getCell(c);
-                const cellObj = {
-                    formula: cell.formula ? `=${cell.formula}` : undefined,
-                    style: {}
-                };
-
-                // 🎨 安全處理：將 richText 陣列合併為純文字字串，避免格式崩潰或出現 [object Object]
-                if (cell.value && typeof cell.value === 'object' && Array.isArray(cell.value.richText)) {
-                    cellObj.value = cell.value.richText.map(rt => rt.text || '').join('');
-                } else {
-                    cellObj.value = parseCellValue(cell.value);
-                }
-
-                if (cell.font) {
-                    if (cell.font.bold) cellObj.style.fontWeight = 'bold';
-                    if (cell.font.italic) cellObj.style.fontStyle = 'italic';
-                    if (cell.font.size) cellObj.style.fontSize = `${cell.font.size}pt`;
-                    const fColor = fixColor(cell.font.color);
-                    if (fColor) cellObj.style.color = fColor;
-                }
-
-                if (cell.fill && cell.fill.fgColor) {
-                    const bColor = fixColor(cell.fill.fgColor);
-                    if (bColor) cellObj.style.backgroundColor = bColor;
-                }
-
-                if (cell.border) {
-                    if (cell.border.top) cellObj.style.borderTop = "1px solid #000000";
-                    if (cell.border.bottom) cellObj.style.borderBottom = "1px solid #000000";
-                    if (cell.border.left) cellObj.style.borderLeft = "1px solid #000000";
-                    if (cell.border.right) cellObj.style.borderRight = "1px solid #000000";
-                }
-
-                if (cell.alignment) {
-                    if (cell.alignment.horizontal) cellObj.style.textAlign = cell.alignment.horizontal;
-                    if (cell.alignment.vertical) {
-                        cellObj.style.verticalAlign = cell.alignment.vertical === 'middle' ? 'middle' : cell.alignment.vertical;
-                    }
-                    if (cell.alignment.wrapText) cellObj.style.wrap = true;
-                }
-
-                cells[c - 1] = cellObj;
-            }
-
-            formattedRows[rowNumber - 1] = { cells: cells, height: row.height ? row.height * 1.33 : 20 };
-        });
-
-        // 🛡️ 建立對應的欄位寬度陣列
-        const columns = [];
-        for (let c = 1; c <= maxColCount; c++) {
-            const col = worksheet.getColumn(c);
-            columns.push({ width: col.width ? col.width * 7 : 64 });
-        }
-
-       if (worksheet._merges) {
-            Object.values(worksheet._merges).forEach(merge => {
-                const { top, left, bottom, right } = merge;
-                const masterRow = formattedRows[top - 1];
-                if (masterRow && masterRow.cells[left - 1]) {
-                    const masterCell = masterRow.cells[left - 1];
-                    masterCell.rowSpan = (bottom - top) + 1;
-                    masterCell.colSpan = (right - left) + 1;
-
-                    // 🛡️ 確保合併儲存格的每一個子儲存格都有完整的邊框，防止線條缺損
-                    for (let r = top; r <= bottom; r++) {
-                        for (let c = left; c <= right; c++) {
-                            if (formattedRows[r - 1] && formattedRows[r - 1].cells[c - 1]) {
-                                const targetCell = formattedRows[r - 1].cells[c - 1];
-                                if (!targetCell.style) targetCell.style = {};
-
-                                // 針對合併區塊的邊界補上框線，確保四周與格線完整
-                                if (r === top) targetCell.style.borderTop = "1px solid #000000";
-                                if (r === bottom) targetCell.style.borderBottom = "1px solid #000000";
-                                if (c === left) targetCell.style.borderLeft = "1px solid #000000";
-                                if (c === right) targetCell.style.borderRight = "1px solid #000000";
-
-                                // 除了左上角主格保留內容外，其餘被合併涵蓋的格子清空值
-                                if (r !== top || c !== left) {
-                                    targetCell.value = "";
-                                    targetCell.formula = undefined;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        const result = { Workbook: { sheets: [{ name: worksheet.name, rows: formattedRows, columns: columns }] } };
+        const { result } = await excelBufferToSpreadsheetJson(fileBuffer);
         console.log("📤 [DEBUG] 準備回傳給前端，JSON 字串長度:", JSON.stringify(result).length);
         res.json({ jsonObject: JSON.stringify(result) });
     } catch (err) { 

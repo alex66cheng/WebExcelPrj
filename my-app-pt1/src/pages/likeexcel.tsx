@@ -1,6 +1,6 @@
 // src/pages/likeexcel.tsx
 import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import '@syncfusion/ej2-react-buttons';
 import { 
   SpreadsheetComponent, SheetsDirective, SheetDirective, 
@@ -28,11 +28,26 @@ interface MongoTemplateOption {
   targetTable?: string;
 }
 
+// 從 Excel 檔案池開啟時，帶回來的檔案資訊
+interface PoolFileInfo {
+  fileName: string;
+  displayName: string;
+  sheetCount: number;
+  sheetNames: string[];
+  canOverwrite: boolean;
+}
+
 export default function LikeExcel() {
   const spreadsheetRef = useRef<SpreadsheetComponent>(null);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isSaving = useRef(false);
-  const [isSavingToDb, setIsSavingToDb] = useState(false); 
+  const [isSavingToDb, setIsSavingToDb] = useState(false);
+
+  // 🌟 檔案池模式：網址帶 ?poolFile=xxx.xlsx 時，直接載入該檔案供檢視與編輯
+  const poolFile = searchParams.get('poolFile');
+  const [poolInfo, setPoolInfo] = useState<PoolFileInfo | null>(null);
+  const [isSavingToPool, setIsSavingToPool] = useState(false);
 
   // 存放從 MongoDB 撈出來的下拉選單資料源
   const [templateOptions, setTemplateOptions] = useState<MongoTemplateOption[]>([]);
@@ -75,6 +90,86 @@ export default function LikeExcel() {
         setTemplateName(defaultList[0].templateName + ".xlsx");
       });
   }, []);
+
+  // 🌟 檔案池模式：載入檔案內容至試算表
+  //    Spreadsheet 元件可能尚未 created 完成，先暫存於 ref，待 created 事件再套用
+  const pendingPoolJson = useRef<string | null>(null);
+
+  const applyPoolJson = (jsonObject: string) => {
+    const spreadsheet = spreadsheetRef.current as any;
+    if (!spreadsheet) {
+      pendingPoolJson.current = jsonObject;
+      return;
+    }
+    spreadsheet.open({ jsonObject });
+    setTimeout(() => spreadsheet.hideSpinner && spreadsheet.hideSpinner(), 100);
+  };
+
+  useEffect(() => {
+    if (!poolFile) return;
+
+    console.log(`📖 從 Excel 檔案池載入: ${poolFile}`);
+    fetch(`http://localhost:3000/api/excel-pool/open/${encodeURIComponent(poolFile)}`)
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || '開啟檔案失敗');
+        return data;
+      })
+      .then((data) => {
+        setPoolInfo({
+          fileName: data.fileName,
+          displayName: data.displayName,
+          sheetCount: data.sheetCount,
+          sheetNames: data.sheetNames || [],
+          canOverwrite: !!data.canOverwrite
+        });
+        setTemplateName(data.fileName);
+        applyPoolJson(data.jsonObject);
+        console.log(`✅ 已載入檔案池檔案 (共 ${data.sheetCount} 個工作表，編輯器僅載入第一個)`);
+      })
+      .catch((err) => {
+        console.error('❌ 開啟檔案池檔案失敗:', err);
+        alert(`❌ 無法開啟檔案 [${poolFile}]:\n${err.message}`);
+      });
+  }, [poolFile]);
+
+  // 🌟 檔案池模式：將編輯後的內容回存檔案池
+  const onSaveToPool = (mode: 'overwrite' | 'new') => {
+    const spreadsheet = spreadsheetRef.current as any;
+    if (!spreadsheet || !poolInfo || isSavingToPool) return;
+
+    const confirmMsg = mode === 'overwrite'
+      ? `確定要以目前畫面的內容「覆蓋」檔案池中的原檔 [${poolInfo.fileName}] 嗎？此動作無法復原。`
+      : `將把目前畫面的內容另存為一個新檔案放入檔案池 (原檔 [${poolInfo.fileName}] 保持不變)，確定要繼續嗎？`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setIsSavingToPool(true);
+    spreadsheet.saveAsJson().then((response: any) => {
+      const workbookJson = response.jsonObject
+        ? JSON.parse(response.jsonObject).Workbook
+        : (response.Workbook || response);
+
+      fetch('http://localhost:3000/api/excel-pool/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: poolInfo.fileName, mode, spreadsheetData: workbookJson })
+      })
+        .then(async (res) => {
+          const result = await res.json();
+          if (!res.ok || !result.success) throw new Error(result.message || '回存失敗');
+          return result;
+        })
+        .then((result) => {
+          alert(`✅ ${result.message}`);
+          setIsSavingToPool(false);
+        })
+        .catch((err) => {
+          console.error('❌ 回存檔案池失敗:', err);
+          alert(`❌ 回存檔案池發生錯誤:\n${err.message}`);
+          setIsSavingToPool(false);
+        });
+    });
+  };
 
   // 當使用者切換下拉選單時的變更監聽
   const handleTemplateChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
@@ -210,11 +305,11 @@ export default function LikeExcel() {
       {/* TOP NAV BAR & TEMPLATE SELECTOR */}
       <div className="h-12 border-b border-slate-200 flex items-center justify-between px-4 shrink-0 bg-slate-900 text-white">
         <div className="flex items-center gap-4 flex-1">
-          <button 
-            onClick={() => navigate('/tools')}
+          <button
+            onClick={() => navigate(poolInfo ? '/like-excel-list' : '/tools')}
             className="text-slate-400 hover:text-white text-sm font-bold flex items-center gap-1 transition-colors shrink-0"
           >
-            ← <span className="hidden sm:inline">Back to Tools</span>
+            ← <span className="hidden sm:inline">{poolInfo ? 'Back to File Pool' : 'Back to Tools'}</span>
           </button>
           <div className="h-4 w-[1px] bg-slate-700 shrink-0"></div>
           
@@ -248,6 +343,38 @@ export default function LikeExcel() {
 
       {/* 🌟 核心修改：全新設計的控制按鈕功能列 */}
       <div className="flex items-center gap-2 p-2 bg-slate-800 border-b border-slate-700 shrink-0 shadow-inner">
+        {/* 🌟 檔案池模式資訊與回存按鈕 */}
+        {poolInfo && (
+          <>
+            <div className="px-2 py-1 text-xs rounded border border-emerald-600 bg-emerald-950 text-emerald-300 max-w-xs truncate" title={poolInfo.fileName}>
+              📄 {poolInfo.displayName}
+              <span className="text-emerald-500 font-mono ml-1">({poolInfo.fileName})</span>
+            </div>
+            {poolInfo.sheetCount > 1 && (
+              <div className="px-2 py-1 text-[10px] rounded border border-amber-600 bg-amber-950 text-amber-300" title={poolInfo.sheetNames.join(', ')}>
+                ⚠️ 原檔共 {poolInfo.sheetCount} 個工作表，此處僅載入第一個
+              </div>
+            )}
+            <button
+              onClick={() => onSaveToPool('new')}
+              disabled={isSavingToPool}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded text-white bg-emerald-600 hover:bg-emerald-500 shadow-sm transition-all disabled:opacity-60"
+            >
+              📄 {isSavingToPool ? '回存中…' : '另存新檔至檔案池'}
+            </button>
+            {poolInfo.canOverwrite && (
+              <button
+                onClick={() => onSaveToPool('overwrite')}
+                disabled={isSavingToPool}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded text-white bg-rose-700 hover:bg-rose-600 shadow-sm transition-all disabled:opacity-60"
+              >
+                💾 覆蓋原檔
+              </button>
+            )}
+            <div className="h-4 w-[1px] bg-slate-700" />
+          </>
+        )}
+
         {selectedTemplate && (
           <div className="px-2 py-1 text-xs font-mono rounded border border-blue-500 bg-blue-950 text-blue-400 hidden sm:block">
             Active Table: {selectedTemplate.targetTable || 'factory_demand_forecast2'}
@@ -305,7 +432,15 @@ export default function LikeExcel() {
         <div className="h-[calc(100vh-80px)] inset-0"> {/* 高度調配扣除兩排功能列 */}
           <SpreadsheetComponent 
             ref={spreadsheetRef}
-            created={() => { (window as any).mySpreadsheet = spreadsheetRef.current; }}
+            created={() => {
+              (window as any).mySpreadsheet = spreadsheetRef.current;
+              // 檔案池的內容比元件早一步取回時，於此補上載入
+              if (pendingPoolJson.current) {
+                const json = pendingPoolJson.current;
+                pendingPoolJson.current = null;
+                applyPoolJson(json);
+              }
+            }}
             height="100%" 
             width="100%"
             openUrl="http://localhost:3000/api/spreadsheet/open"
