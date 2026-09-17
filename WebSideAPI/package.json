@@ -13,6 +13,7 @@
     "@syncfusion/ej2-excel-export": "^32.1.19",
     "@syncfusion/ej2-file-utils": "^32.1.19",
     "@syncfusion/ej2-spreadsheet": "^32.1.21",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",

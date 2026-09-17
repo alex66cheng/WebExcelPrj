@@ -15,6 +15,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const Y = require('yjs'); // ✨【核心修正】：把被我漏掉的 Yjs 套件宣告補回來！
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 // ==========================================
 // 📝 MongoDB Connection for Cell Logs
@@ -39,10 +40,11 @@ app.use(express.urlencoded({ limit: '50mb', extended: true, parameterLimit: 5000
 const GOOGLE_CLIENT_ID = '414351508100-t8tgkajnjoafpjvs59v28vot4cced8r4.apps.googleusercontent.com';
 const JWT_SECRET = 'webexcelprj-cloud-jwt-secret-change-me';
 
-// Every /api/* route requires a valid session JWT except the Google sign-in
-// endpoint itself (there's no session yet at the point a client calls it).
+// Every /api/* route requires a valid session JWT except the sign-in/sign-up
+// endpoints themselves (there's no session yet at the point a client calls them).
+const PUBLIC_AUTH_PATHS = new Set(['/auth/google', '/auth/register', '/auth/login']);
 app.use('/api', (req, res, next) => {
-    if (req.path === '/auth/google') return next();
+    if (PUBLIC_AUTH_PATHS.has(req.path)) return next();
 
     const authHeader = req.headers['authorization'] || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -1624,6 +1626,60 @@ app.post('/api/auth/google', async (req, res) => {
 
 app.get('/api/auth/me', (req, res) => {
     res.json({ success: true, user: req.user });
+});
+
+// ========================================================
+// 🔑 Email/password 登入（Google 需要 HTTPS 或 localhost 才能用，
+// 在還沒有網域可以配 HTTPS 之前，先提供這個備用登入方式）
+// ========================================================
+const userSchema = new mongoose.Schema({
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    passwordHash: { type: String, required: true },
+    name: { type: String, required: true },
+}, { timestamps: true });
+const User = mongoose.model('User', userSchema, 'users');
+
+app.post('/api/auth/register', async (req, res) => {
+    const { email, password, name } = req.body;
+    if (!email || !password || !name) {
+        return res.status(400).json({ success: false, message: '缺少 email、password 或 name' });
+    }
+    if (password.length < 8) {
+        return res.status(400).json({ success: false, message: '密碼至少需要 8 個字元' });
+    }
+    try {
+        const normalizedEmail = email.toLowerCase().trim();
+        const existing = await User.findOne({ email: normalizedEmail });
+        if (existing) {
+            return res.status(409).json({ success: false, message: '此 email 已被註冊' });
+        }
+        const passwordHash = await bcrypt.hash(password, 10);
+        const user = await User.create({ email: normalizedEmail, passwordHash, name });
+        const token = jwt.sign({ email: user.email, name: user.name }, JWT_SECRET, { expiresIn: '8h' });
+        res.json({ success: true, token, user: { email: user.email, name: user.name } });
+    } catch (err) {
+        console.error('❌ 註冊失敗:', err.message);
+        res.status(500).json({ success: false, message: '註冊失敗' });
+    }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) {
+        return res.status(400).json({ success: false, message: '缺少 email 或 password' });
+    }
+    try {
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+        const match = user && await bcrypt.compare(password, user.passwordHash);
+        if (!match) {
+            return res.status(401).json({ success: false, message: 'Email 或密碼錯誤' });
+        }
+        const token = jwt.sign({ email: user.email, name: user.name }, JWT_SECRET, { expiresIn: '8h' });
+        res.json({ success: true, token, user: { email: user.email, name: user.name } });
+    } catch (err) {
+        console.error('❌ 登入失敗:', err.message);
+        res.status(500).json({ success: false, message: '登入失敗' });
+    }
 });
 
 
