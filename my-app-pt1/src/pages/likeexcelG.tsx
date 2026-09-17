@@ -1,6 +1,7 @@
 // src/pages/likeexcel.tsx
 import React, { useState, useRef, useEffect, useCallback, RefObject } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { API_BASE, WS_BASE } from '../config/apiBase';
 import '@syncfusion/ej2-react-buttons';
 import { SpreadsheetComponent } from '@syncfusion/ej2-react-spreadsheet';
 
@@ -108,7 +109,7 @@ function LikeExcelContainer() {
 
   useEffect(() => {
     console.log("likeexcel.tsx: 🔍 Fetching real templates from MongoDB...");
-    fetch('http://localhost:3000/api/spreadsheet/get-templates')
+    fetch(`${API_BASE}/api/spreadsheet/get-templates`)
       .then(res => res.json())
       .then(data => {
         if (data.success && data.templates && data.templates.length > 0) {
@@ -236,7 +237,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
   const logCellChange = useCallback((cellAddress: string, oldValue: any, newValue: any, reason: string) => {
     const userEmail = userRef.current?.email || 'anonymous';
 
-    fetch('http://localhost:3000/api/spreadsheet/log-cell-change', {
+    fetch(`${API_BASE}/api/spreadsheet/log-cell-change`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -287,7 +288,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
     const doc = new Y.Doc();
     yDocRef.current = doc;
 
-    const wsUrl = 'ws://localhost:3000'; 
+    const wsUrl = WS_BASE;
     const roomName = `excel-room-${selectedTemplate.templateCode}`;
     
     console.log(`🔌 [WebSocket 建立連線] 房號: ${roomName}`);
@@ -392,7 +393,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
     isSaving.current = true;
     spreadsheet.saveAsJson().then((response: any) => {
       const payload = { JSONData: JSON.stringify(response.jsonObject ? JSON.parse(response.jsonObject).Workbook : response) };
-      fetch('http://localhost:3000/api/spreadsheet/saveX2', {
+      fetch(`${API_BASE}/api/spreadsheet/saveX2`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -415,7 +416,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
 
     setIsSavingToDb(true);
     spreadsheet.saveAsJson().then((response: any) => {
-      fetch('http://localhost:3000/api/spreadsheet/save-excel-to-mssql-by-template', {
+      fetch(`${API_BASE}/api/spreadsheet/save-excel-to-mssql-by-template`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spreadsheetData: response, templateCode: selectedTemplate.templateCode })
@@ -439,7 +440,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
     //  setTemplateName(file.name);
     }
 
-    fetch('http://localhost:3000/api/spreadsheet/open', {
+    fetch(`${API_BASE}/api/spreadsheet/open`, {
       method: 'POST',
       body: formData,
     })
@@ -565,8 +566,8 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
                       created={() => { (window as any).mySpreadsheet = spreadsheetRef.current; }}
                       height="100%" 
                       width="100%"
-                      openUrl="http://localhost:3000/api/spreadsheet/open"
-                      saveUrl="http://localhost:3000/api/spreadsheet/saveX2" // 統一交給優化過的 saveX2 高擬真導出
+                      openUrl={`${API_BASE}/api/spreadsheet/open`}
+                      saveUrl={`${API_BASE}/api/spreadsheet/saveX2`} // 統一交給優化過的 saveX2 高擬真導出
                       allowOpen={true} 
                       beforeOpen={onBeforeOpen}
                       allowSave={true}

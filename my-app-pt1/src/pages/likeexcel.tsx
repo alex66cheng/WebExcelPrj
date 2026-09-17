@@ -1,6 +1,7 @@
 // src/pages/likeexcel.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { API_BASE } from '../config/apiBase';
 import '@syncfusion/ej2-react-buttons';
 import { 
   SpreadsheetComponent, SheetsDirective, SheetDirective, 
@@ -60,7 +61,7 @@ export default function LikeExcel() {
   useEffect(() => {
     console.log("🔍 Fetching real templates from MongoDB...");
     
-    fetch('http://localhost:3000/api/spreadsheet/get-templates')
+    fetch(`${API_BASE}/api/spreadsheet/get-templates`)
       .then(res => res.json())
       .then(data => {
         if (data.success && data.templates && data.templates.length > 0) {
@@ -109,7 +110,7 @@ export default function LikeExcel() {
     if (!poolFile) return;
 
     console.log(`📖 從 Excel 檔案池載入: ${poolFile}`);
-    fetch(`http://localhost:3000/api/excel-pool/open/${encodeURIComponent(poolFile)}`)
+    fetch(`${API_BASE}/api/excel-pool/open/${encodeURIComponent(poolFile)}`)
       .then(async (res) => {
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.message || '開啟檔案失敗');
@@ -149,7 +150,7 @@ export default function LikeExcel() {
         ? JSON.parse(response.jsonObject).Workbook
         : (response.Workbook || response);
 
-      fetch('http://localhost:3000/api/excel-pool/save', {
+      fetch(`${API_BASE}/api/excel-pool/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileName: poolInfo.fileName, mode, spreadsheetData: workbookJson })
@@ -196,7 +197,7 @@ export default function LikeExcel() {
         JSONData: JSON.stringify(response.jsonObject ? JSON.parse(response.jsonObject).Workbook : response)
       };
 
-      fetch('http://localhost:3000/api/spreadsheet/saveX2', {
+      fetch(`${API_BASE}/api/spreadsheet/saveX2`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -243,7 +244,7 @@ export default function LikeExcel() {
     console.log(`📥 打包網格數據，準備依範本 [${selectedTemplate.templateCode}] 寫入 MSSQL...`);
 
     spreadsheet.saveAsJson().then((response: any) => {
-      fetch('http://localhost:3000/api/spreadsheet/save-excel-to-mssql-by-template', {
+      fetch(`${API_BASE}/api/spreadsheet/save-excel-to-mssql-by-template`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -278,7 +279,7 @@ export default function LikeExcel() {
       setTemplateName(file.name);
     }
 
-    fetch('http://localhost:3000/api/spreadsheet/open', {
+    fetch(`${API_BASE}/api/spreadsheet/open`, {
       method: 'POST',
       body: formData,
     })
@@ -443,8 +444,8 @@ export default function LikeExcel() {
             }}
             height="100%" 
             width="100%"
-            openUrl="http://localhost:3000/api/spreadsheet/open"
-            saveUrl="http://localhost:3000/api/spreadsheet/saveX2" // 統一交給優化過的 saveX2 高擬真導出
+            openUrl={`${API_BASE}/api/spreadsheet/open`}
+            saveUrl={`${API_BASE}/api/spreadsheet/saveX2`} // 統一交給優化過的 saveX2 高擬真導出
             allowOpen={true} 
             beforeOpen={onBeforeOpen}
             allowSave={true}

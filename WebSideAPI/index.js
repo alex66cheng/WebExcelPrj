@@ -658,7 +658,16 @@ function fixColor(colorObj) {
 async function excelBufferToSpreadsheetJson(fileBuffer) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(fileBuffer);
-    const worksheet = workbook.getWorksheet(1);
+    // getWorksheet(1) resolves by ExcelJS's internal sheet id, not tab position —
+    // for workbooks whose sheets were reordered/copied (ids no longer start at 1),
+    // that silently loads the wrong tab. Instead, match what Excel actually shows on
+    // open: the saved activeTab if it's visible, else the first visible sheet, else
+    // just the first sheet (e.g. if every sheet is hidden).
+    const activeTabIndex = workbook.views && workbook.views[0] ? workbook.views[0].activeTab : 0;
+    const activeCandidate = workbook.worksheets[activeTabIndex];
+    const worksheet = (activeCandidate && activeCandidate.state === 'visible')
+        ? activeCandidate
+        : (workbook.worksheets.find(ws => ws.state === 'visible') || workbook.worksheets[0]);
 
     // 🛡️ 決定全域的最大欄位數基準（至少 26 欄，或依工作表實際最大欄位而定）
     const maxColCount = Math.max(worksheet.columnCount || 0, 26);

@@ -1,8 +1,7 @@
 // src/pages/LikeExcelList.tsx
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-
-const API_BASE = 'http://localhost:3000';
+import { API_BASE } from '../config/apiBase';
 
 interface ExcelPoolFile {
   fileName: string;    // 實體檔案名稱（檔案池內唯一，下載/匯入皆以此為準）

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_BASE } from '../config/apiBase';
 
 // ==========================================
 // 1. TypeScript Interfaces & Definitions
@@ -95,7 +96,7 @@ export const ExcelMappingSetup: React.FC = () => {
 
   // 初始掛載：從後端取得清單
   useEffect(() => {
-    fetch('http://localhost:3000/api/xlsx2dbsetL1')
+    fetch(`${API_BASE}/api/xlsx2dbsetL1`)
       .then((res) => {
         if (!res.ok) throw new Error('Failed to fetch templates');
         return res.json();
@@ -115,7 +116,7 @@ export const ExcelMappingSetup: React.FC = () => {
   
   try {
     // Explicitly target port 3000 where Express is running
-    const response = await fetch(`http://localhost:3000/api/table-columns?table=${encodeURIComponent(tableName)}`);
+    const response = await fetch(`${API_BASE}/api/table-columns?table=${encodeURIComponent(tableName)}`);
     const data = await response.json();
     
     if (data.success) {
@@ -212,7 +213,7 @@ setTimeline({
     formData.append('file', selectedFile);
 
     try {
-      const response = await fetch('http://localhost:3000/api/spreadsheet/upload', {
+      const response = await fetch(`${API_BASE}/api/spreadsheet/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -240,7 +241,7 @@ setTimeline({
     }
     setTestingConnection(true);
     try {
-      const response = await fetch('http://localhost:3000/api/spreadsheet/test-connection', {
+      const response = await fetch(`${API_BASE}/api/spreadsheet/test-connection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host: dbHost, user: dbUser, password: dbPassword })
@@ -287,7 +288,7 @@ setTimeline({
     setTableStatus(null);
 
     try {
-      const response = await fetch(`http://localhost:3000/api/spreadsheet/check-table`, {
+      const response = await fetch(`${API_BASE}/api/spreadsheet/check-table`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetTable: targetTable, host: dbHost, user: dbUser, password: dbPassword })
@@ -353,7 +354,7 @@ setTimeline({
     setIsCreateModalOpen(false);
 
     try {
-      const response = await fetch(`http://localhost:3000/api/spreadsheet/check-table`, {
+      const response = await fetch(`${API_BASE}/api/spreadsheet/check-table`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -404,7 +405,7 @@ setTimeline({
     };
 
     try {
-      const response = await fetch('http://localhost:3000/api/spreadsheet/save-template', {
+      const response = await fetch(`${API_BASE}/api/spreadsheet/save-template`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(configPayload)

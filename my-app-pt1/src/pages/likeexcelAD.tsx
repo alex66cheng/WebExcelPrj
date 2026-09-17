@@ -1,6 +1,7 @@
 // src/pages/likeexcelAD.tsx
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { API_BASE } from '../config/apiBase';
 import '@syncfusion/ej2-react-buttons';
 import { 
   SpreadsheetComponent, SheetsDirective, SheetDirective, 
@@ -45,7 +46,7 @@ export default function LikeExcelAD() {
 
   // 📝 Function to send cell modification log to server
   const logCellChange = useCallback((cellAddress: string, oldValue: any, newValue: any, reason: string) => {
-    fetch('http://localhost:3000/api/spreadsheet/log-cell-change', {
+    fetch(`${API_BASE}/api/spreadsheet/log-cell-change`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -135,13 +136,13 @@ export default function LikeExcelAD() {
       })
       .catch(() => {
         // Fallback to Node.js API if C# API is not available
-        fetch('http://localhost:3000/api/user/profile')
+        fetch(`${API_BASE}/api/user/profile`)
           .then((res) => res.json())
           .then((data) => setAdId(data.id || 'Unknown'))
           .catch(() => setAdId('Auth Error'));
       });
 
-    fetch('http://localhost:3000/api/xlsx2dbsetL1')
+    fetch(`${API_BASE}/api/xlsx2dbsetL1`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {
@@ -161,7 +162,7 @@ export default function LikeExcelAD() {
     const fileName = selectedObj?.filename || 'AAA.xlsx';
     const filePath = `C:\\Alex\\${fileName}`;
 
-    fetch('http://localhost:3000/api/spreadsheet/open', {
+    fetch(`${API_BASE}/api/spreadsheet/open`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filePath })
@@ -189,7 +190,7 @@ export default function LikeExcelAD() {
 
     spreadsheet.saveAsJson().then((response: any) => {
       // 將這裡的路徑改為與後端一致的 /api/spreadsheet/save-excel-to-db
-      fetch('http://localhost:3000/api/spreadsheet/save-excel-to-db', {
+      fetch(`${API_BASE}/api/spreadsheet/save-excel-to-db`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spreadsheetData: response }) 
@@ -215,7 +216,7 @@ export default function LikeExcelAD() {
     isSaving.current = true;
 
     spreadsheet.saveAsJson().then((response: any) => {
-      fetch('http://localhost:3000/api/spreadsheet/save', {
+      fetch(`${API_BASE}/api/spreadsheet/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spreadsheetData: response }) 
@@ -240,7 +241,7 @@ export default function LikeExcelAD() {
     if (!spreadsheet || isSaving.current) return;
     isSaving.current = true;
     spreadsheet.saveAsJson().then((response: any) => {
-      fetch('http://localhost:3000/api/spreadsheet/saveX', {
+      fetch(`${API_BASE}/api/spreadsheet/saveX`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spreadsheetData: response })
@@ -266,7 +267,7 @@ export default function LikeExcelAD() {
     const file = args.file;
     const formData = new FormData();
     formData.append('file', file);
-    fetch('http://localhost:3000/api/spreadsheet/open', { method: 'POST', body: formData })
+    fetch(`${API_BASE}/api/spreadsheet/open`, { method: 'POST', body: formData })
       .then((res) => res.json())
       .then((data) => {
         if (data.jsonObject && spreadsheetRef.current) {
@@ -334,8 +335,8 @@ export default function LikeExcelAD() {
             created={() => { (window as any).mySpreadsheet = spreadsheetRef.current; }}
             height="100%"
             width="100%"
-            openUrl="http://localhost:3000/api/spreadsheet/open"
-            saveUrl="http://localhost:3000/api/spreadsheet/save"
+            openUrl={`${API_BASE}/api/spreadsheet/open`}
+            saveUrl={`${API_BASE}/api/spreadsheet/save`}
             allowOpen={true}
             beforeOpen={onBeforeOpen}
             allowSave={true}
