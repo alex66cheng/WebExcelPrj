@@ -1,12 +1,11 @@
-// src/pages/likeexcel.tsx
-import React, { useState, useRef, useEffect, useCallback, RefObject } from 'react';
+// src/pages/likeexcelG.tsx
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE, WS_BASE } from '../config/apiBase';
+import { useAuth } from '../context/useAuth';
+import type { AuthUser } from '../context/AuthContext';
 import '@syncfusion/ej2-react-buttons';
 import { SpreadsheetComponent } from '@syncfusion/ej2-react-spreadsheet';
-
-// 使用 useGoogleLogin 隱式授權
-import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
 
 // Yjs 協作核心套件
 import * as Y from 'yjs';
@@ -25,87 +24,18 @@ import '@syncfusion/ej2-grids/styles/material.css';
 import '@syncfusion/ej2-react-spreadsheet/styles/material.css';
 import "@syncfusion/ej2-spreadsheet/styles/material.css";
 
-const GOOGLE_CLIENT_ID = "414351508100-t8tgkajnjoafpjvs59v28vot4cced8r4.apps.googleusercontent.com";
-
 interface MongoTemplateOption {
   templateCode: string;
   templateName: string;
   targetTable?: string;
 }
 
-interface GoogleUser {
-  name: string;
-  email: string;
-  picture: string;
-}
-
-export default function LikeExcelWrapper() {
-  return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <LikeExcelContainer />
-    </GoogleOAuthProvider>
-  );
-}
-
-function GoogleLoginSection({ onUserAuthenticated }: { onUserAuthenticated: (user: GoogleUser, token: string) => void }) {
-  const [localUser, setLocalUser] = useState<GoogleUser | null>(null);
-
-  const login = useGoogleLogin({
-    onSuccess: async (tokenResponse) => {
-      try {
-        const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-          headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
-        });
-        const decoded = await res.json();
-        const userData: GoogleUser = {
-          name: decoded.name,
-          email: decoded.email,
-          picture: decoded.picture
-        };
-        setLocalUser(userData);
-        console.log("✅ Google 驗證成功");
-        onUserAuthenticated(userData, tokenResponse.access_token);
-      } catch (err) {
-        console.error("❌ 解析用戶資料失敗", err);
-      }
-    },
-    onError: () => console.error('❌ Google Login Failed'),
-  });
-
-  return (
-    <div className="flex gap-4 items-center shrink-0">
-      {!localUser ? (
-        <button 
-          type="button"
-          onClick={() => login()}
-          className="bg-white text-slate-800 text-xs font-bold px-3 py-1.5 rounded shadow hover:bg-slate-100 transition-all flex items-center gap-1.5"
-        >
-          <svg className="w-3 h-3" viewBox="0 0 48 48">
-            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-            <path fill="#4285F4" d="M46.5 24c0-1.61-.15-3.16-.42-4.69H24v8.87h12.66c-.54 2.94-2.2 5.43-4.69 7.11l7.29 5.65C43.53 36.6 46.5 30.9 46.5 24z"/>
-            <path fill="#FBBC05" d="M10.54 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.98-6.19z"/>
-            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.29-5.65c-2.02 1.35-4.61 2.16-8.6 2.16-6.26 0-11.57-4.22-13.46-10.42l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-          </svg>
-          Google 帳號登入
-        </button>
-      ) : (
-        <div className="flex items-center gap-2">
-          <img src={localUser.picture} alt="profile" className="w-6 h-6 rounded-full object-cover" />
-          <span className="text-xs font-medium text-slate-300 hidden sm:inline">{localUser.name}</span>
-        </div>
-      )}
-      <span className="text-[10px] bg-green-900 text-green-400 px-2 py-0.5 rounded border border-green-800 font-mono">CRDT_MODE</span>
-    </div>
-  );
-}
-
-function LikeExcelContainer() {
+export default function LikeExcelContainer() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [templateOptions, setTemplateOptions] = useState<MongoTemplateOption[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<MongoTemplateOption | null>(null);
   const [templateName, setTemplateName] = useState("未命名矩陣範本.xlsx");
-
-  const onUserLoginCallback = useRef<((user: GoogleUser, token: string) => void) | null>(null);
 
   useEffect(() => {
     console.log("likeexcel.tsx: 🔍 Fetching real templates from MongoDB...");
@@ -144,18 +74,6 @@ function LikeExcelContainer() {
     }
   };
 
-  const userRef = useRef<GoogleUser | null>(null);
-
-  const handleUserAuthenticated = (loggedInUser: GoogleUser, token: string) => {
-    userRef.current = loggedInUser;
-
-    if (onUserLoginCallback.current) {
-      onUserLoginCallback.current(loggedInUser, token);
-    }
-
-    console.log("✅ 使用者資訊已同步至 Ref:", userRef.current.email);
-  };
-
   if (!selectedTemplate) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-slate-900 text-white font-mono">
@@ -173,11 +91,11 @@ function LikeExcelContainer() {
             ← Back to Tools
           </button>
           <div className="h-4 w-[1px] bg-slate-700 shrink-0"></div>
-          
+
           <div className="flex items-center gap-2 max-w-sm w-full">
             <span className="text-xs text-slate-400 font-medium shrink-0">選擇對應範本:</span>
-            <select 
-              value={selectedTemplate.templateCode} 
+            <select
+              value={selectedTemplate.templateCode}
               onChange={handleTemplateChange}
               className="bg-slate-800 text-blue-400 border border-slate-700 text-xs font-mono rounded px-2 py-1 w-full"
             >
@@ -187,29 +105,35 @@ function LikeExcelContainer() {
             </select>
           </div>
         </div>
-        
-        <GoogleLoginSection onUserAuthenticated={handleUserAuthenticated} />
+
+        <div className="flex gap-4 items-center shrink-0">
+          {user && (
+            <div className="flex items-center gap-2">
+              {user.picture && <img src={user.picture} alt="profile" className="w-6 h-6 rounded-full object-cover" />}
+              <span className="text-xs font-medium text-slate-300 hidden sm:inline">{user.name}</span>
+            </div>
+          )}
+          <span className="text-[10px] bg-green-900 text-green-400 px-2 py-0.5 rounded border border-green-800 font-mono">CRDT_MODE</span>
+        </div>
       </div>
 
-      <LikeExcelCoreKeyed 
-        userRef={userRef}
+      <LikeExcelCoreKeyed
+        user={user}
         key={selectedTemplate.templateCode}
         selectedTemplate={selectedTemplate}
         templateName={templateName}
-        onUserLoginRegister={(cb) => { onUserLoginCallback.current = cb; }}
       />
     </div>
   );
 }
 
 interface CoreProps {
-  userRef: RefObject<GoogleUser | null>;
+  user: AuthUser | null;
   selectedTemplate: MongoTemplateOption;
   templateName: string;
-  onUserLoginRegister: (callback: (user: GoogleUser, token: string) => void) => void;
 }
 
-function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLoginRegister }: CoreProps) {
+function LikeExcelCoreKeyed({ user, selectedTemplate, templateName }: CoreProps) {
   const spreadsheetRef = useRef<SpreadsheetComponent>(null);
   const isSaving = useRef(false);
   const [isSavingToDb, setIsSavingToDb] = useState(false);
@@ -220,6 +144,10 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
 
   const yDocRef = useRef<Y.Doc | null>(null);
   const wsProviderRef = useRef<WebsocketProvider | null>(null);
+
+  // 已登入的使用者身分（來自 AuthContext），保存在 ref 供事件 callback 使用
+  const userRef = useRef<AuthUser | null>(user);
+  useEffect(() => { userRef.current = user; }, [user]);
 
   // 📝 Cell modification logging - store old values before edit
   const cellOldValueRef = useRef<{ address: string; value: any } | null>(null);
@@ -250,7 +178,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
         reason
       })
     }).catch(err => console.error('Failed to log cell change:', err));
-  }, [selectedTemplate.templateCode, userRef]);
+  }, [selectedTemplate.templateCode]);
 
   // 📝 Handle reason dialog submit
   const handleReasonSubmit = () => {
@@ -290,16 +218,31 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
 
     const wsUrl = WS_BASE;
     const roomName = `excel-room-${selectedTemplate.templateCode}`;
-    
+
     console.log(`🔌 [WebSocket 建立連線] 房號: ${roomName}`);
     const provider = new WebsocketProvider(wsUrl, roomName, doc);
     wsProviderRef.current = provider;
 
+    // 1. 定義顏色產生器
+    const getUserColor = (email: string) => {
+      // 1. 擴大顏色池 (使用 HSL 色彩空間，可以產生 360 種不同的顏色)
+      // 我們使用隨機雜湊來決定色相 (Hue)
+      let hash = 0;
+      for (let i = 0; i < email.length; i++) {
+          hash = email.charCodeAt(i) + ((hash << 5) - hash);
+      }
+
+      // 2. 取 0-360 的色相值，固定飽和度 70%，亮度 85%
+      const h = Math.abs(hash) % 360;
+      return `hsl(${h}, 70%, 85%)`;
+    };
+
+    const currentUser = userRef.current;
     provider.awareness.setLocalStateField('user', {
-      name: '訪客成員',
-      picture: 'https://www.gravatar.com/avatar/?d=mp',
-      email: 'guest@local',
-      color: '#718096'
+      name: currentUser?.name || '訪客成員',
+      picture: currentUser?.picture || 'https://www.gravatar.com/avatar/?d=mp',
+      email: currentUser?.email || 'guest@local',
+      color: currentUser ? getUserColor(currentUser.email) : '#718096'
     });
 
     provider.awareness.on('change', () => {
@@ -316,26 +259,12 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
       }
     });
 
-    // 1. 定義顏色產生器
-  const getUserColor = (email: string) => {
-    // 1. 擴大顏色池 (使用 HSL 色彩空間，可以產生 360 種不同的顏色)
-    // 我們使用隨機雜湊來決定色相 (Hue)
-    let hash = 0;
-    for (let i = 0; i < email.length; i++) {
-        hash = email.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    
-    // 2. 取 0-360 的色相值，固定飽和度 70%，亮度 85%
-    const h = Math.abs(hash) % 360;
-    return `hsl(${h}, 70%, 85%)`;
-};
-
    const yCellsMap = doc.getMap('cells_data');
    yCellsMap.observe((event) => {
     const spreadsheet = spreadsheetRef.current as any;
     if (!spreadsheet) return;
 
-    spreadsheet.isRemoteSync = true; 
+    spreadsheet.isRemoteSync = true;
 
     event.changes.keys.forEach((change, key) => {
         if (change.action === 'add' || change.action === 'update') {
@@ -347,7 +276,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
                 // 2. 更新內容並套用顏色
                 spreadsheet.updateCell({ value: cellInfo.value }, cellInfo.address);
                 spreadsheet.cellFormat({ backgroundColor: userColor }, cellInfo.address);
-                
+
                 console.log(`✅ ${cellInfo.user} 使用顏色 ${userColor} 更新了 ${cellInfo.address}`);
             }
         }
@@ -355,21 +284,6 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
 
     spreadsheet.isRemoteSync = false;
 });
-
-
-    
-    onUserLoginRegister((loggedInUser, token) => {
-      console.log(`⚡ [身分動態同步] 協作狀態更新: ${loggedInUser.email}`);
-      const randomColors = ['#E53E3E', '#3182CE', '#38A169', '#D69E2E', '#805AD5', '#319795'];
-      const chosenColor = randomColors[Math.floor(Math.random() * randomColors.length)];
-      
-      provider.awareness.setLocalStateField('user', {
-        name: loggedInUser.name,
-        picture: loggedInUser.picture,
-        email: loggedInUser.email,
-        color: chosenColor
-      });
-    });
 
     return () => {
       console.log(`🔌 [安全斷開 WebSocket] 房號: ${roomName}`);
@@ -450,7 +364,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
           const spreadsheet = spreadsheetRef.current as any;
           console.log("JSON to load:", JSON.parse(data.jsonObject));
           spreadsheet.open({ jsonObject: data.jsonObject });
-          
+
           setTimeout(() => {
             spreadsheet.hideSpinner();
           }, 100);
@@ -521,18 +435,18 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
           <span className="text-xs text-slate-500">正在協作:</span>
           <div className="flex -space-x-2 overflow-hidden">
             {collaborators.map((collab, index) => (
-              <img 
+              <img
                 key={index}
                 title={`${collab.name} (${collab.email})`}
                 className="inline-block h-6 w-6 rounded-full ring-2 ring-slate-900 object-cover cursor-help"
-                src={collab.picture} 
+                src={collab.picture}
                 alt={collab.name}
                 style={{ border: `1.5px solid ${collab.color}` }}
               />
             ))}
           </div>
         </div>
-        
+
         <div className="flex-1" />
 
         <button
@@ -542,7 +456,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
           ⚙️ VBA like
         </button>
 
-        <button 
+        <button
           onClick={onSaveToDatabase}
           disabled={isSavingToDb}
           className={`${isSavingToDb ? 'bg-indigo-700 opacity-60' : 'bg-indigo-600 hover:bg-indigo-500'} text-white text-xs font-bold px-4 py-1.5 rounded transition-all`}
@@ -550,7 +464,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
           {isSavingToDb ? 'Storing to DB...' : '📥 Save to DB'}
         </button>
 
-        <button 
+        <button
           onClick={onSaveWithStyle}
           className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold px-4 py-1.5 rounded transition-all"
         >
@@ -561,14 +475,14 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
       {/* SPREADSHEET AREA */}
       <div className="flex-1 relative w-full min-h-0 bg-white">
         <div className="absolute inset-0 w-full h-full">
-          <SpreadsheetComponent 
+          <SpreadsheetComponent
                       ref={spreadsheetRef}
                       created={() => { (window as any).mySpreadsheet = spreadsheetRef.current; }}
-                      height="100%" 
+                      height="100%"
                       width="100%"
                       openUrl={`${API_BASE}/api/spreadsheet/open`}
                       saveUrl={`${API_BASE}/api/spreadsheet/saveX2`} // 統一交給優化過的 saveX2 高擬真導出
-                      allowOpen={true} 
+                      allowOpen={true}
                       beforeOpen={onBeforeOpen}
                       allowSave={true}
                       showSheetTabs={true}
@@ -588,7 +502,7 @@ function LikeExcelCoreKeyed({ userRef, selectedTemplate, templateName, onUserLog
                       saveComplete={(args: any) => console.log("💾 SaveComplete:", args)}
                       actionComplete={onActionComplete}
                     />
-          
+
           {/* 下載載入遮罩層 */}
           {!isInitialized && (
             <div className="absolute inset-0 bg-white/90 backdrop-blur-xs flex flex-col items-center justify-center z-40">

@@ -15,6 +15,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const Y = require('yjs'); // ✨【核心修正】：把被我漏掉的 Yjs 套件宣告補回來！
 const { OAuth2Client } = require('google-auth-library');
+const jwt = require('jsonwebtoken');
 
 // ==========================================
 // 📝 MongoDB Connection for Cell Logs
@@ -30,6 +31,33 @@ const server = http.createServer(app);
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true, parameterLimit: 50000 }));
+
+// ==========================================
+// 🔐 Auth (cloud build: Google OAuth)
+// ==========================================
+// Same Google OAuth Client ID already used by the frontend (see
+// my-app-pt1/src/config/googleAuth.ts) — https://console.cloud.google.com/apis/credentials
+const GOOGLE_CLIENT_ID = '414351508100-t8tgkajnjoafpjvs59v28vot4cced8r4.apps.googleusercontent.com';
+const JWT_SECRET = 'webexcelprj-cloud-jwt-secret-change-me';
+const oAuth2Client = new OAuth2Client(GOOGLE_CLIENT_ID);
+
+// Every /api/* route requires a valid session JWT except the Google sign-in
+// endpoint itself (there's no session yet at the point a client calls it).
+app.use('/api', (req, res, next) => {
+    if (req.path === '/auth/google') return next();
+
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!token) {
+        return res.status(401).json({ success: false, message: '未登入或缺少驗證權杖' });
+    }
+    try {
+        req.user = jwt.verify(token, JWT_SECRET);
+        next();
+    } catch (err) {
+        return res.status(401).json({ success: false, message: '權杖無效或已過期' });
+    }
+});
 
 // ==========================================
 // 📂 ⚙️ 多媒體 Multer 實體磁碟儲存設定 (步驟 0 專用)
@@ -1548,7 +1576,7 @@ app.post('/api/spreadsheet/execute-import', async (req, res) => {
 
 
 // ========================================================
-// 🌟 【新增安全區】：Google ID Token 安全簽章驗證器
+// 🌟 Google ID Token 安全簽章驗證器 + 登入路由
 // ========================================================
 async function verifyGoogleToken(token) {
     try {
@@ -1563,6 +1591,26 @@ async function verifyGoogleToken(token) {
         return { success: false, error: err.message };
     }
 }
+
+// 前端用 @react-oauth/google 的 GoogleLogin 元件取得 ID token 後 POST 到這裡，
+// 驗證通過後換發本站自己的 JWT，之後所有 /api/* 請求都帶著這個 JWT。
+app.post('/api/auth/google', async (req, res) => {
+    const { credential } = req.body;
+    if (!credential) {
+        return res.status(400).json({ success: false, message: '缺少 Google credential' });
+    }
+    const result = await verifyGoogleToken(credential);
+    if (!result.success) {
+        return res.status(401).json({ success: false, message: result.error });
+    }
+    const { email, name, picture } = result.payload;
+    const token = jwt.sign({ email, name, picture }, JWT_SECRET, { expiresIn: '8h' });
+    res.json({ success: true, token, user: { email, name, picture } });
+});
+
+app.get('/api/auth/me', (req, res) => {
+    res.json({ success: true, user: req.user });
+});
 
 
 const wss = new WebSocket.Server({ noServer: true });
@@ -1587,13 +1635,6 @@ app.get('/api/spreadsheet/get-templates', (req, res) => {
     console.log("📂 前端正在請求試算表模板清單...");
     // 先回傳一個空陣列，確保前端不會因為 404 報錯而卡死
     res.json([]); 
-});
-
-app.get('/api/user/profile', (req, res) => {
-    // 這取決於你的 AD 驗證方式，通常是從 Header 或 Session 取得
-    // 範例：若使用 Windows Authentication
-    const userId = req.headers['x-remote-user'] || 'Guest_User';
-    res.json({ id: userId });
 });
 
 // ==========================================
