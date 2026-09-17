@@ -1,0 +1,26 @@
+# Reverse proxy + automatic HTTPS (Let's Encrypt) for www.mygwsite.com.
+#
+# Why two site blocks: the frontend (Vite dev server, PM2 app "frontend") and
+# the API (Express, PM2 app "websideapi") already run on fixed ports (5173 and
+# 3000) with no reverse proxy in front of them — see ecosystem.config.js and
+# my-app-pt1/src/config/apiBase.ts. Rather than restructure that, this just
+# terminates TLS on top of the existing ports: :443 for the app (the frontend
+# Vite dev server binds only to the public IP, not loopback, hence proxying to
+# that IP:5173 instead of localhost:5173), :3443 for the API/WebSocket
+# (apiBase.ts switches to https/wss on port 3443 whenever the page itself was
+# loaded over https).
+#
+# Install: copy this file to /etc/caddy/Caddyfile then `sudo systemctl reload caddy`
+# (see setup commands provided separately).
+
+www.mygwsite.com {
+	reverse_proxy 103.200.219.246:5173
+}
+
+www.mygwsite.com:3443 {
+	reverse_proxy 103.200.219.246:3000
+}
+
+mygwsite.com {
+	redir https://www.mygwsite.com{uri} permanent
+}

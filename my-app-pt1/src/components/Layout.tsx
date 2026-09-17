@@ -58,10 +58,6 @@ export default function Layout() {
                 <NavLink to="/like-excel" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
                   Like Excel
                 </NavLink>
-
-                <NavLink to="/like-excel-g" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  Like Excel G
-                </NavLink>
               </div>
             )}
           </div>
@@ -99,10 +95,6 @@ export default function Layout() {
               <div className="flex flex-col gap-1">
                 <NavLink to="/excel-mapping-setup" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
                   Excel Mapping Setup
-                </NavLink>
-                
-                <NavLink to="/email-classify-setup" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  Email Setup
                 </NavLink>
               </div>
             )}

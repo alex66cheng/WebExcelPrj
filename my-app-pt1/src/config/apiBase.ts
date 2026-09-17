@@ -1,7 +1,13 @@
 // Derived from the browser's own location so the app keeps working whether it's
-// opened via localhost, a LAN IP, or a public IP — without needing env vars.
-export const API_BASE = `http://${window.location.hostname}:3000`;
-export const WS_BASE = `ws://${window.location.hostname}:3000`;
+// opened via localhost, a LAN IP, a public IP, or the public domain — without
+// needing env vars. When the page is loaded over HTTPS (i.e. via the Caddy
+// reverse proxy in front of www.mygwsite.com), the API is reached over HTTPS/WSS
+// too, on the :3443 site Caddy proxies to the API's plain-HTTP port 3000 — Google
+// OAuth requires an https:// (or localhost) origin, which is why this matters.
+const isSecure = window.location.protocol === 'https:';
+const apiPort = isSecure ? 3443 : 3000;
+export const API_BASE = `${isSecure ? 'https' : 'http'}://${window.location.hostname}:${apiPort}`;
+export const WS_BASE = `${isSecure ? 'wss' : 'ws'}://${window.location.hostname}:${apiPort}`;
 
 const TOKEN_STORAGE_KEY = 'webexcelprj_auth_token';
 

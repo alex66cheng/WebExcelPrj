@@ -17,9 +17,10 @@ export default function Login() {
 
   // 使用 OAuth 彈窗授權流程（跟 likeexcelG.tsx 原本驗證過可用的方式一致），
   // 而非 Google 官方 "Sign In With Google" 按鈕元件 —— 兩者都要求
-  // http://localhost 或 https:// 來源，在測試機的公網 IP + HTTP 環境下
-  // 一律會被 Google 政策擋下（Error 400: invalid_request）。在還沒有網域
-  // 可以配 HTTPS 之前，下面的 email/password 表單是唯一可用的登入方式。
+  // http://localhost 或 https:// 來源，純 IP + HTTP 環境下會被 Google 政策擋下
+  // （Error 400: invalid_request）。現在 www.mygwsite.com 透過 Caddy 提供
+  // HTTPS，所以走網域登入時 Google 登入就能用；email/password 表單保留作為
+  // 不想用 Google 帳號時的備用登入方式。
   const googleLogin = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
       setError(null);
@@ -139,7 +140,7 @@ export default function Login() {
             <path fill="#FBBC05" d="M10.54 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.98-6.19z"/>
             <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.29-5.65c-2.02 1.35-4.61 2.16-8.6 2.16-6.26 0-11.57-4.22-13.46-10.42l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
           </svg>
-          Google 帳號登入（需 HTTPS 或 localhost）
+          Google 帳號登入
         </button>
 
         {error && <p className="text-red-500 text-sm">{error}</p>}

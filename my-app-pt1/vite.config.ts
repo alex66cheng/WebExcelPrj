@@ -8,4 +8,7 @@ export default defineConfig({
     react(),
     tailwindcss(), // This is the engine that makes Tailwind work
   ],
+  server: {
+    allowedHosts: ['www.mygwsite.com', 'mygwsite.com'],
+  },
 })

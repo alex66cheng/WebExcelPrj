@@ -14,6 +14,10 @@ const mongoose = require('mongoose');
 const http = require('http');
 const WebSocket = require('ws');
 const Y = require('yjs'); // ✨【核心修正】：把被我漏掉的 Yjs 套件宣告補回來！
+const syncProtocol = require('y-protocols/sync');
+const awarenessProtocol = require('y-protocols/awareness');
+const encoding = require('lib0/encoding');
+const decoding = require('lib0/decoding');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
@@ -260,23 +264,38 @@ function decodeOriginalName(name) {
     }
 }
 
-// 防止 ../ 路徑穿越，只允許存取檔案池目錄下的檔案
-function resolvePoolFile(fileName) {
+// 🔒 每個使用者只能看到/操作自己的檔案池：以登入者 email 為鍵，各自獨立一個子目錄
+function safeUserDirName(email) {
+    const normalized = String(email || '').toLowerCase().trim();
+    const safe = normalized.replace(/[^a-z0-9._@-]/g, '_');
+    return safe || 'unknown';
+}
+
+function getUserPoolDir(email) {
+    const dir = path.join(excelPoolDirectory, safeUserDirName(email));
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    return dir;
+}
+
+// 防止 ../ 路徑穿越，且只允許存取「該使用者自己」檔案池目錄下的檔案
+function resolvePoolFile(userDir, fileName) {
     const safeName = path.basename(String(fileName || ''));
     if (!safeName || safeName === '.' || safeName === '..') return null;
-    const fullPath = path.join(excelPoolDirectory, safeName);
-    if (path.dirname(fullPath) !== excelPoolDirectory) return null;
+    const fullPath = path.join(userDir, safeName);
+    if (path.dirname(fullPath) !== userDir) return null;
     return fullPath;
 }
 
-// 同名檔案不覆蓋，改以 "檔名 (2).xlsx" 方式遞增
-function uniquePoolName(originalName) {
+// 同名檔案不覆蓋，改以 "檔名 (2).xlsx" 方式遞增（僅在該使用者自己的目錄內比對）
+function uniquePoolName(userDir, originalName) {
     const safeName = path.basename(decodeOriginalName(originalName)).replace(/[\\/:*?"<>|]/g, '_');
     const ext = path.extname(safeName);
     const base = path.basename(safeName, ext);
     let candidate = `${base}${ext}`;
     let counter = 2;
-    while (fs.existsSync(path.join(excelPoolDirectory, candidate))) {
+    while (fs.existsSync(path.join(userDir, candidate))) {
         candidate = `${base} (${counter})${ext}`;
         counter++;
     }
@@ -285,10 +304,14 @@ function uniquePoolName(originalName) {
 
 const poolStorage = multer.diskStorage({
     destination: function (req, file, cb) {
-        cb(null, excelPoolDirectory);
+        try {
+            cb(null, getUserPoolDir(req.user && req.user.email));
+        } catch (err) {
+            cb(err);
+        }
     },
     filename: function (req, file, cb) {
-        cb(null, uniquePoolName(file.originalname));
+        cb(null, uniquePoolName(getUserPoolDir(req.user && req.user.email), file.originalname));
     }
 });
 
@@ -309,25 +332,60 @@ const uploadPool = multer({
 //    以 JSON 檔保存 { 實體檔名: { displayName, updatedAt } }，
 //    與實體檔名脫鉤，改名不影響下載網址與既有匯入流程。
 // ------------------------------------------
-const excelPoolMetaFile = path.join(__dirname, 'excel-pool-meta.json');
+function poolMetaFile(userDir) {
+    return path.join(userDir, '.pool-meta.json');
+}
 
-function readPoolMeta() {
+function readPoolMeta(userDir) {
     try {
-        if (!fs.existsSync(excelPoolMetaFile)) return {};
-        return JSON.parse(fs.readFileSync(excelPoolMetaFile, 'utf8')) || {};
+        const metaFile = poolMetaFile(userDir);
+        if (!fs.existsSync(metaFile)) return {};
+        return JSON.parse(fs.readFileSync(metaFile, 'utf8')) || {};
     } catch (err) {
         console.error('⚠️ 讀取檔案池中繼資料失敗，改以空白設定繼續:', err.message);
         return {};
     }
 }
 
-function writePoolMeta(meta) {
-    fs.writeFileSync(excelPoolMetaFile, JSON.stringify(meta, null, 2), 'utf8');
+function writePoolMeta(userDir, meta) {
+    fs.writeFileSync(poolMetaFile(userDir), JSON.stringify(meta, null, 2), 'utf8');
 }
 
 // 沒有自訂名稱時，預設顯示為「去掉副檔名的檔名」
 function defaultDisplayName(fileName) {
     return path.basename(fileName, path.extname(fileName));
+}
+
+// ------------------------------------------
+// 🤝 邀請他人共同編輯檔案池中的檔案
+//    以 MongoDB 記錄「誰的哪個檔案，邀請了哪個 email」，不搬動實體檔案，
+//    被邀請者存取時直接讀寫擁有者的檔案池目錄。
+// ------------------------------------------
+const fileShareSchema = new mongoose.Schema({
+    ownerEmail: { type: String, required: true, lowercase: true, trim: true },
+    fileName: { type: String, required: true },
+    invitedEmail: { type: String, required: true, lowercase: true, trim: true },
+}, { timestamps: true });
+fileShareSchema.index({ ownerEmail: 1, fileName: 1, invitedEmail: 1 }, { unique: true });
+const FileShare = mongoose.model('FileShare', fileShareSchema, 'file_shares');
+
+// 依 req.user + (query/body 帶入的) owner，解析出實際可存取的檔案路徑：
+// - 沒帶 owner，或 owner 就是自己 → 存取自己的檔案池
+// - owner 是別人 → 必須有一筆對應的邀請紀錄才允許存取，讀寫都落在「擁有者」的目錄下
+async function resolvePoolFileAccess(req, fileName) {
+    const requesterEmail = String(req.user.email || '').toLowerCase().trim();
+    const ownerParam = String((req.query && req.query.owner) || (req.body && req.body.owner) || '').toLowerCase().trim();
+    const ownerEmail = ownerParam || requesterEmail;
+
+    if (ownerEmail !== requesterEmail) {
+        const share = await FileShare.findOne({ ownerEmail, fileName: path.basename(String(fileName || '')), invitedEmail: requesterEmail });
+        if (!share) return null;
+    }
+
+    const userDir = getUserPoolDir(ownerEmail);
+    const fullPath = resolvePoolFile(userDir, fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) return null;
+    return { fullPath, userDir, ownerEmail, isOwner: ownerEmail === requesterEmail };
 }
 
 // 上傳一個或多個 Excel 檔案進檔案池
@@ -350,14 +408,15 @@ app.post('/api/excel-pool/upload', (req, res) => {
     });
 });
 
-// 取得檔案池內所有 Excel 檔案清單
+// 取得檔案池內所有 Excel 檔案清單（僅限自己上傳的檔案）
 app.get('/api/excel-pool/list', (req, res) => {
     try {
-        const meta = readPoolMeta();
-        const files = fs.readdirSync(excelPoolDirectory)
+        const userDir = getUserPoolDir(req.user.email);
+        const meta = readPoolMeta(userDir);
+        const files = fs.readdirSync(userDir)
             .filter(name => ALLOWED_EXCEL_EXT.includes(path.extname(name).toLowerCase()))
             .map(name => {
-                const stat = fs.statSync(path.join(excelPoolDirectory, name));
+                const stat = fs.statSync(path.join(userDir, name));
                 const ext = path.extname(name).toLowerCase().replace('.', '');
                 return {
                     fileName: name,
@@ -379,7 +438,8 @@ app.get('/api/excel-pool/list', (req, res) => {
 
 // 修改單一檔案的顯示名稱 / 別名 (不更動實體檔名)
 app.patch('/api/excel-pool/:fileName/name', (req, res) => {
-    const fullPath = resolvePoolFile(req.params.fileName);
+    const userDir = getUserPoolDir(req.user.email);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
     if (!fullPath || !fs.existsSync(fullPath)) {
         return res.status(404).json({ success: false, message: '找不到指定檔案' });
     }
@@ -394,9 +454,9 @@ app.patch('/api/excel-pool/:fileName/name', (req, res) => {
 
     try {
         const fileName = path.basename(fullPath);
-        const meta = readPoolMeta();
+        const meta = readPoolMeta(userDir);
         meta[fileName] = { displayName, updatedAt: new Date().toISOString() };
-        writePoolMeta(meta);
+        writePoolMeta(userDir, meta);
         console.log(`🏷️ 已更新檔案顯示名稱: ${fileName} → ${displayName}`);
         return res.json({ success: true, message: '名稱已更新', fileName, displayName });
     } catch (err) {
@@ -407,10 +467,11 @@ app.patch('/api/excel-pool/:fileName/name', (req, res) => {
 
 // 開啟檔案池中的檔案，轉成 Syncfusion Spreadsheet 可載入的 JSON
 app.get('/api/excel-pool/open/:fileName', async (req, res) => {
-    const fullPath = resolvePoolFile(req.params.fileName);
-    if (!fullPath || !fs.existsSync(fullPath)) {
-        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    const access = await resolvePoolFileAccess(req, req.params.fileName);
+    if (!access) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案，或您沒有此檔案的存取權限' });
     }
+    const { fullPath, userDir } = access;
 
     const fileName = path.basename(fullPath);
     const ext = path.extname(fileName).toLowerCase().replace('.', '');
@@ -423,7 +484,7 @@ app.get('/api/excel-pool/open/:fileName', async (req, res) => {
 
     try {
         const { result, sheetCount, sheetNames } = await excelBufferToSpreadsheetJson(fs.readFileSync(fullPath));
-        const meta = readPoolMeta();
+        const meta = readPoolMeta(userDir);
         console.log(`📖 已開啟檔案池檔案: ${fileName} (共 ${sheetCount} 個工作表)`);
         return res.json({
             success: true,
@@ -530,10 +591,11 @@ function spreadsheetJsonToWorkbook(workbookJson, sheetName) {
 // 將線上編輯器的內容回存至檔案池 (覆蓋原檔或另存新檔)
 app.post('/api/excel-pool/save', async (req, res) => {
     const { fileName, mode, spreadsheetData } = req.body || {};
-    const fullPath = resolvePoolFile(fileName);
-    if (!fullPath || !fs.existsSync(fullPath)) {
-        return res.status(404).json({ success: false, message: '找不到來源檔案' });
+    const access = await resolvePoolFileAccess(req, fileName);
+    if (!access) {
+        return res.status(404).json({ success: false, message: '找不到來源檔案，或您沒有此檔案的存取權限' });
     }
+    const { fullPath, userDir } = access;
 
     const workbookJson = spreadsheetData && (spreadsheetData.Workbook || spreadsheetData);
     if (!workbookJson || !workbookJson.sheets || workbookJson.sheets.length === 0) {
@@ -566,18 +628,18 @@ app.post('/api/excel-pool/save', async (req, res) => {
             const now = new Date();
             const pad = (n) => String(n).padStart(2, '0');
             const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-            targetName = uniquePoolName(`${path.basename(sourceName, ext)} (編輯 ${stamp}).xlsx`);
+            targetName = uniquePoolName(userDir, `${path.basename(sourceName, ext)} (編輯 ${stamp}).xlsx`);
         }
 
         const workbook = spreadsheetJsonToWorkbook(workbookJson, workbookJson.sheets[0].name);
-        await workbook.xlsx.writeFile(path.join(excelPoolDirectory, targetName));
+        await workbook.xlsx.writeFile(path.join(userDir, targetName));
 
         // 另存新檔時，沿用原檔的別名作為新檔別名的基礎
         if (targetName !== sourceName) {
-            const meta = readPoolMeta();
+            const meta = readPoolMeta(userDir);
             const baseName = (meta[sourceName] && meta[sourceName].displayName) || defaultDisplayName(sourceName);
             meta[targetName] = { displayName: `${baseName} (編輯版)`, updatedAt: new Date().toISOString() };
-            writePoolMeta(meta);
+            writePoolMeta(userDir, meta);
         }
 
         console.log(`💾 編輯內容已回存至檔案池: ${targetName} (mode=${mode || 'new'})`);
@@ -593,17 +655,18 @@ app.post('/api/excel-pool/save', async (req, res) => {
 });
 
 // 下載 / 開啟檔案池中的單一檔案
-app.get('/api/excel-pool/download/:fileName', (req, res) => {
-    const fullPath = resolvePoolFile(req.params.fileName);
-    if (!fullPath || !fs.existsSync(fullPath)) {
-        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+app.get('/api/excel-pool/download/:fileName', async (req, res) => {
+    const access = await resolvePoolFileAccess(req, req.params.fileName);
+    if (!access) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案，或您沒有此檔案的存取權限' });
     }
-    return res.download(fullPath, path.basename(fullPath));
+    return res.download(access.fullPath, path.basename(access.fullPath));
 });
 
 // 從檔案池刪除單一檔案
 app.delete('/api/excel-pool/:fileName', (req, res) => {
-    const fullPath = resolvePoolFile(req.params.fileName);
+    const userDir = getUserPoolDir(req.user.email);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
     if (!fullPath || !fs.existsSync(fullPath)) {
         return res.status(404).json({ success: false, message: '找不到指定檔案' });
     }
@@ -612,15 +675,119 @@ app.delete('/api/excel-pool/:fileName', (req, res) => {
         fs.unlinkSync(fullPath);
 
         // 一併清掉別名設定，避免同名檔案重新上傳時沿用到舊別名
-        const meta = readPoolMeta();
+        const meta = readPoolMeta(userDir);
         if (meta[fileName]) {
             delete meta[fileName];
-            writePoolMeta(meta);
+            writePoolMeta(userDir, meta);
         }
         console.log(`🗑️ 已從 Excel 檔案池刪除: ${fileName}`);
         return res.json({ success: true, message: '檔案已刪除' });
     } catch (err) {
         console.error('❌ 刪除檔案失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 邀請他人共同編輯檔案池中的某個檔案（僅擁有者本人可邀請）
+app.post('/api/excel-pool/:fileName/invite', async (req, res) => {
+    const ownerEmail = String(req.user.email || '').toLowerCase().trim();
+    const userDir = getUserPoolDir(ownerEmail);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    }
+
+    const invitedEmail = String((req.body && req.body.email) || '').toLowerCase().trim();
+    if (!invitedEmail || !invitedEmail.includes('@')) {
+        return res.status(400).json({ success: false, message: '請提供有效的 email' });
+    }
+    if (invitedEmail === ownerEmail) {
+        return res.status(400).json({ success: false, message: '不能邀請自己' });
+    }
+
+    try {
+        const fileName = path.basename(fullPath);
+        await FileShare.findOneAndUpdate(
+            { ownerEmail, fileName, invitedEmail },
+            { ownerEmail, fileName, invitedEmail },
+            { upsert: true, returnDocument: 'after' }
+        );
+        console.log(`🤝 已邀請 ${invitedEmail} 共同編輯 ${fileName} (擁有者: ${ownerEmail})`);
+        return res.json({ success: true, message: `已邀請 ${invitedEmail} 共同編輯`, fileName, invitedEmail });
+    } catch (err) {
+        console.error('❌ 邀請共同編輯失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 取得單一檔案目前已邀請的共同編輯者名單
+// 擁有者本人，或已被邀請的共同編輯者（帶 ?owner= 查詢），都可以查看這份名單，
+// 藉此在畫面上顯示「這份檔案有哪些人可以共同編輯」；邀請/取消邀請仍僅限擁有者本人操作。
+app.get('/api/excel-pool/:fileName/shares', async (req, res) => {
+    const access = await resolvePoolFileAccess(req, req.params.fileName);
+    if (!access) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案，或您沒有此檔案的存取權限' });
+    }
+    try {
+        const fileName = path.basename(access.fullPath);
+        const shares = await FileShare.find({ ownerEmail: access.ownerEmail, fileName }).sort({ createdAt: 1 });
+        return res.json({
+            success: true,
+            fileName,
+            ownerEmail: access.ownerEmail,
+            invitedEmails: shares.map(s => s.invitedEmail)
+        });
+    } catch (err) {
+        console.error('❌ 讀取共同編輯名單失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 取消某人共同編輯的權限（僅擁有者本人可取消）
+app.delete('/api/excel-pool/:fileName/invite/:email', async (req, res) => {
+    const ownerEmail = String(req.user.email || '').toLowerCase().trim();
+    const userDir = getUserPoolDir(ownerEmail);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    }
+    try {
+        const fileName = path.basename(fullPath);
+        const invitedEmail = String(req.params.email || '').toLowerCase().trim();
+        await FileShare.deleteOne({ ownerEmail, fileName, invitedEmail });
+        console.log(`🚫 已取消 ${invitedEmail} 對 ${fileName} 的共同編輯權限`);
+        return res.json({ success: true, message: `已取消 ${invitedEmail} 的共同編輯權限` });
+    } catch (err) {
+        console.error('❌ 取消共同編輯權限失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 取得別人邀請「我」共同編輯的檔案清單
+app.get('/api/excel-pool/shared-with-me', async (req, res) => {
+    const myEmail = String(req.user.email || '').toLowerCase().trim();
+    try {
+        const shares = await FileShare.find({ invitedEmail: myEmail }).sort({ createdAt: -1 });
+        const files = shares.map(share => {
+            const ownerDir = getUserPoolDir(share.ownerEmail);
+            const fullPath = resolvePoolFile(ownerDir, share.fileName);
+            if (!fullPath || !fs.existsSync(fullPath)) return null;
+            const stat = fs.statSync(fullPath);
+            const meta = readPoolMeta(ownerDir);
+            const ext = path.extname(share.fileName).toLowerCase().replace('.', '');
+            return {
+                fileName: share.fileName,
+                displayName: (meta[share.fileName] && meta[share.fileName].displayName) || defaultDisplayName(share.fileName),
+                ext,
+                editable: EDITABLE_EXCEL_EXT.includes(ext),
+                size: stat.size,
+                uploadedAt: stat.mtime.toISOString(),
+                ownerEmail: share.ownerEmail
+            };
+        }).filter(Boolean);
+        return res.json({ success: true, count: files.length, files });
+    } catch (err) {
+        console.error('❌ 讀取共同編輯檔案清單失敗:', err.message);
         return res.status(500).json({ success: false, message: err.message });
     }
 });
@@ -1581,7 +1748,9 @@ app.post('/api/spreadsheet/execute-import', async (req, res) => {
 // 前端用 @react-oauth/google 的 useGoogleLogin（OAuth 彈窗流程，與 likeexcelG.tsx
 // 原本驗證過可用的方式一致）取得 access_token，而不是 Google 官方 "Sign In With
 // Google" 按鈕元件的 ID token —— 後者的 Google Identity Services 只允許
-// http://localhost 或 https:// 來源，在公網 IP + HTTP 環境下會被 Google 政策擋下。
+// http://localhost 或 https:// 來源，純 IP + HTTP 環境下會被 Google 政策擋下。
+// 現在 www.mygwsite.com 由 Caddy 提供 HTTPS（見 Caddyfile），Google OAuth Client
+// 的 Authorized JavaScript origins 也已加上 https://www.mygwsite.com。
 async function verifyGoogleAccessToken(accessToken) {
     try {
         // 1. 確認這個 access token 確實是核發給本應用程式（比對 audience），
@@ -1629,8 +1798,8 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 // ========================================================
-// 🔑 Email/password 登入（Google 需要 HTTPS 或 localhost 才能用，
-// 在還沒有網域可以配 HTTPS 之前，先提供這個備用登入方式）
+// 🔑 Email/password 登入（Google 需要 HTTPS 或 localhost 才能用；www.mygwsite.com
+// 現在有 Caddy 提供的 HTTPS，Google 登入是主要方式，這個保留作為備用登入方式）
 // ========================================================
 const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -1685,15 +1854,127 @@ app.post('/api/auth/login', async (req, res) => {
 
 const wss = new WebSocket.Server({ noServer: true });
 
+// 🌟 每個房間（templateCode / 檔案池）各自對應一份 Y.Doc + Awareness，
+//    負責把某個使用者送來的 sync/awareness 訊息轉發給同房間的其他所有連線。
+//    y-websocket 3.x 拿掉了舊版內建的 server 端 bin/utils，所以這段轉發邏輯要自己實作，
+//    否則客戶端各自的 Y.Doc 永遠不會收到彼此的更新（表現出來就是 A 改了 B 看不到）。
+const messageSync = 0;
+const messageAwareness = 1;
+const yRooms = new Map(); // roomName -> { doc, awareness, conns: Map<ws, Set<clientID>> }
+
+function getYRoom(roomName) {
+  let room = yRooms.get(roomName);
+  if (room) return room;
+
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  const conns = new Map();
+  room = { doc, awareness, conns };
+  yRooms.set(roomName, room);
+
+  const send = (ws, message) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(message, (err) => { if (err) ws.close(); });
+    }
+  };
+
+  doc.on('update', (update, origin) => {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageSync);
+    syncProtocol.writeUpdate(encoder, update);
+    const message = encoding.toUint8Array(encoder);
+    conns.forEach((_clientIDs, conn) => {
+      if (conn !== origin) send(conn, message);
+    });
+  });
+
+  awareness.on('update', ({ added, updated, removed }, origin) => {
+    const changedClients = added.concat(updated, removed);
+    if (origin !== null && conns.has(origin)) {
+      const connControlledIDs = conns.get(origin);
+      added.forEach((clientID) => connControlledIDs.add(clientID));
+      removed.forEach((clientID) => connControlledIDs.delete(clientID));
+    }
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageAwareness);
+    encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients));
+    const message = encoding.toUint8Array(encoder);
+    conns.forEach((_clientIDs, conn) => send(conn, message));
+  });
+
+  return room;
+}
+
+function setupYWebsocketConnection(ws, roomName) {
+  const { doc, awareness, conns } = getYRoom(roomName);
+  conns.set(ws, new Set());
+  ws.binaryType = 'arraybuffer';
+
+  const send = (message) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(message, (err) => { if (err) ws.close(); });
+    }
+  };
+
+  ws.on('message', (data) => {
+    try {
+      const uint8 = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer || data);
+      const decoder = decoding.createDecoder(uint8);
+      const messageType = decoding.readVarUint(decoder);
+      switch (messageType) {
+        case messageSync: {
+          const encoder = encoding.createEncoder();
+          encoding.writeVarUint(encoder, messageSync);
+          syncProtocol.readSyncMessage(decoder, encoder, doc, ws);
+          if (encoding.length(encoder) > 1) send(encoding.toUint8Array(encoder));
+          break;
+        }
+        case messageAwareness: {
+          awarenessProtocol.applyAwarenessUpdate(awareness, decoding.readVarUint8Array(decoder), ws);
+          break;
+        }
+      }
+    } catch (err) {
+      console.error('❌ [Yjs 訊息處理失敗]', err.message);
+    }
+  });
+
+  ws.on('close', () => {
+    const controlledIDs = conns.get(ws);
+    conns.delete(ws);
+    if (controlledIDs) {
+      awarenessProtocol.removeAwarenessStates(awareness, Array.from(controlledIDs), null);
+    }
+    if (conns.size === 0) yRooms.delete(roomName);
+  });
+
+  // 連線建立時：送出 sync step1，讓新加入者跟現有文件對齊
+  {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageSync);
+    syncProtocol.writeSyncStep1(encoder, doc);
+    send(encoding.toUint8Array(encoder));
+  }
+  // 並同步現有的 awareness 狀態（讓新加入者馬上看到誰在線上）
+  const awarenessStates = awareness.getStates();
+  if (awarenessStates.size > 0) {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageAwareness);
+    encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, Array.from(awarenessStates.keys())));
+    send(encoding.toUint8Array(encoder));
+  }
+}
+
 // 在 server.on('upgrade') 時，必須支援帶有 query string 的路徑比對
 server.on('upgrade', (request, socket, head) => {
   const { pathname, query } = url.parse(request.url, true);
-  
-  // 🔴 注意：比對路徑時，不能直接用 request.url === '/excel-room-...' 
+
+  // 🔴 注意：比對路徑時，不能直接用 request.url === '/excel-room-...'
   // 必須用 pathname 來比對，否則帶了 ?auth_token 欄位後會比對失敗而 404！
   if (pathname.startsWith('/excel-room-')) {
     wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
+      const roomName = pathname.slice(1); // 去掉開頭斜線，對應前端 roomName
+      setupYWebsocketConnection(ws, roomName);
     });
   } else {
     socket.destroy();

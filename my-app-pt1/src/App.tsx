@@ -12,9 +12,7 @@ import FAQuotation from './pages/faquotation'; // Import new file
 import FaQuo from './pages/faquo'; // Import your new form file
 import Approve from './pages/approve';         // Import new file
 import LikeExcel from './pages/likeexcel'; // Import it
-import LikeExcelG from './pages/likeexcelG'; // Import it
 import { ExcelMappingSetup } from './pages/ExcelMappingSetup';
-import { EMailClassifySetup } from './pages/EMailClassifySetup'; 
 import  LikeExcelList  from './pages/ExcelList';
 import DailyForecastChangePage from './pages/DailyForecastChangePage';
 
@@ -44,8 +42,6 @@ export default function App() {
               <Route path="approve" element={<Approve />} />
               <Route path="tools" element={<ToolsPage />} />
               <Route path="like-excel" element={<LikeExcel />} />
-              <Route path="like-excel-g" element={<LikeExcelG />} />
-              <Route path="email-classify-setup" element={<EMailClassifySetup />} />
 
               {/* 🌟 新增：對接到 Layout.tsx 側邊欄點擊的網址路徑 */}
               <Route path="excel-mapping-setup" element={<ExcelMappingSetup />}/>
