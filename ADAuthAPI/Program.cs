@@ -1,4 +1,28 @@
 using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+
+// Shared secret with WebSideAPI/index.js's JWT_SECRET — both sides must use the
+// exact same string so Node can verify the token this service signs.
+const string JwtSharedSecret = "webexcelprj-enterprise-ad-jwt-secret-change-me";
+
+string GenerateAdToken(string domain, string username)
+{
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSharedSecret));
+    var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+    var token = new JwtSecurityToken(
+        claims: new[]
+        {
+            new Claim("domain", domain),
+            new Claim("username", username)
+        },
+        expires: DateTime.UtcNow.AddHours(8),
+        signingCredentials: credentials
+    );
+    return new JwtSecurityTokenHandler().WriteToken(token);
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -66,7 +90,8 @@ app.MapGet("/api/findAD", (HttpContext context) =>
             fullName = fullName,
             domain = domain,
             username = username,
-            authenticationType = identity.AuthenticationType
+            authenticationType = identity.AuthenticationType,
+            token = GenerateAdToken(domain, username)
         });
     }
 

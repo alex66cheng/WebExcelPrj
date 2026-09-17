@@ -1,6 +1,7 @@
 // src/components/Layout.tsx
 import { useState } from 'react';
 import { Link, NavLink, Outlet } from 'react-router-dom';
+import { useAuth } from '../context/useAuth';
 
 export default function Layout() {
   // 控制各分類的收摺狀態
@@ -9,15 +10,20 @@ export default function Layout() {
   const [isSetupOpen, setIsSetupOpen] = useState(true);
   const [isReportOpen, setIsReportOpen] = useState(true);
 
+  const { user } = useAuth();
+
   return (
     <div className="flex flex-row w-screen h-screen overflow-hidden bg-gray-100">
-      
+
       {/* 側邊欄 Sidebar */}
       <aside className="w-64 bg-slate-900 text-white flex h-full flex-col shrink-0">
-        <div className="p-6 border-b border-slate-800">
+        <div className="p-6 border-b border-slate-800 flex flex-col gap-2">
           <Link to="/" className="text-xl font-bold text-blue-400">Greenwave Demo</Link>
+          {user && (
+            <span className="text-xs text-slate-400 truncate">{user.domain}\{user.username}</span>
+          )}
         </div>
-        
+
         <nav className="flex-1 p-4 flex flex-col gap-1 overflow-y-auto">
           <NavLink to="/dashboard" className={({ isActive }) => `p-3 rounded text-sm block ${isActive ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
             Dashboard
@@ -37,10 +43,6 @@ export default function Layout() {
               <div className="flex flex-col gap-1">
                 <NavLink to="/like-excel" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
                   Like Excel
-                </NavLink>
-
-                <NavLink to="/like-excel-g" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  Like Excel G
                 </NavLink>
 
                 <NavLink to="/like-excel-ad" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>

@@ -32,6 +32,31 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true, parameterLimit: 50000 }));
 
 // ==========================================
+// 🔐 Auth (enterprise build: Windows AD via IIS)
+// ==========================================
+const jwt = require('jsonwebtoken');
+// Shared secret with ADAuthAPI/Program.cs's JwtSharedSecret — both sides must
+// use the exact same string so this service can verify tokens ADAuthAPI signs
+// after IIS validates the user's Windows identity against AD.
+const JWT_SECRET = 'webexcelprj-enterprise-ad-jwt-secret-change-me';
+
+// Every /api/* route requires a valid AD-issued JWT — there is no local login
+// route on this build, identity always comes from ADAuthAPI.
+app.use('/api', (req, res, next) => {
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!token) {
+        return res.status(401).json({ success: false, message: '未登入或缺少驗證權杖' });
+    }
+    try {
+        req.user = jwt.verify(token, JWT_SECRET); // { domain, username }
+        next();
+    } catch (err) {
+        return res.status(401).json({ success: false, message: '權杖無效或已過期' });
+    }
+});
+
+// ==========================================
 // 📂 ⚙️ 多媒體 Multer 實體磁碟儲存設定 (步驟 0 專用)
 // ==========================================
 const uploadDirectory = path.join(__dirname, 'uploads');
@@ -1590,10 +1615,9 @@ app.get('/api/spreadsheet/get-templates', (req, res) => {
 });
 
 app.get('/api/user/profile', (req, res) => {
-    // 這取決於你的 AD 驗證方式，通常是從 Header 或 Session 取得
-    // 範例：若使用 Windows Authentication
-    const userId = req.headers['x-remote-user'] || 'Guest_User';
-    res.json({ id: userId });
+    // req.user 是由前面的 auth middleware 驗證 ADAuthAPI 簽發的 JWT 後解出的
+    // { domain, username }，不再直接信任客戶端可自行偽造的 x-remote-user header。
+    res.json({ id: req.user.username, domain: req.user.domain });
 });
 
 // ==========================================

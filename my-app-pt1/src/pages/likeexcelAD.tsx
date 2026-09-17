@@ -1,7 +1,8 @@
 // src/pages/likeexcelAD.tsx
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_BASE } from '../config/apiBase';
+import { API_BASE, apiFetch } from '../config/apiBase';
+import { useAuth } from '../context/useAuth';
 import '@syncfusion/ej2-react-buttons';
 import { 
   SpreadsheetComponent, SheetsDirective, SheetDirective, 
@@ -24,9 +25,12 @@ import "@syncfusion/ej2-spreadsheet/styles/material.css";
 export default function LikeExcelAD() {
   const spreadsheetRef = useRef<SpreadsheetComponent>(null);
   const navigate = useNavigate();
-  
-  const [adId, setAdId] = useState<string>('Loading...');
-  const [adDomain, setAdDomain] = useState<string>('');
+
+  // AD 身分已由 AuthProvider 在應用啟動時透過 ADAuthAPI 解析完成
+  // （能進到這個頁面代表 ProtectedRoute 已確認登入成功）
+  const { user } = useAuth();
+  const adId = user?.username || 'Unknown';
+  const adDomain = user?.domain || '';
   const isSaving = useRef(false);
 
   const [templates, setTemplates] = useState<any[]>([]);
@@ -46,7 +50,7 @@ export default function LikeExcelAD() {
 
   // 📝 Function to send cell modification log to server
   const logCellChange = useCallback((cellAddress: string, oldValue: any, newValue: any, reason: string) => {
-    fetch(`${API_BASE}/api/spreadsheet/log-cell-change`, {
+    apiFetch(`/api/spreadsheet/log-cell-change`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -121,28 +125,7 @@ export default function LikeExcelAD() {
   };
 
   useEffect(() => {
-    // Call C# API to get AD user info
-    fetch('http://localhost:5000/api/findAD', {
-      credentials: 'include' // Required for Windows Authentication
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.authenticated) {
-          setAdId(data.username || 'Unknown');
-          setAdDomain(data.domain || '');
-        } else {
-          setAdId('Not Authenticated');
-        }
-      })
-      .catch(() => {
-        // Fallback to Node.js API if C# API is not available
-        fetch(`${API_BASE}/api/user/profile`)
-          .then((res) => res.json())
-          .then((data) => setAdId(data.id || 'Unknown'))
-          .catch(() => setAdId('Auth Error'));
-      });
-
-    fetch(`${API_BASE}/api/xlsx2dbsetL1`)
+    apiFetch(`/api/xlsx2dbsetL1`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {
@@ -162,7 +145,7 @@ export default function LikeExcelAD() {
     const fileName = selectedObj?.filename || 'AAA.xlsx';
     const filePath = `C:\\Alex\\${fileName}`;
 
-    fetch(`${API_BASE}/api/spreadsheet/open`, {
+    apiFetch(`/api/spreadsheet/open`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filePath })
@@ -190,7 +173,7 @@ export default function LikeExcelAD() {
 
     spreadsheet.saveAsJson().then((response: any) => {
       // 將這裡的路徑改為與後端一致的 /api/spreadsheet/save-excel-to-db
-      fetch(`${API_BASE}/api/spreadsheet/save-excel-to-db`, {
+      apiFetch(`/api/spreadsheet/save-excel-to-db`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spreadsheetData: response }) 
@@ -216,7 +199,7 @@ export default function LikeExcelAD() {
     isSaving.current = true;
 
     spreadsheet.saveAsJson().then((response: any) => {
-      fetch(`${API_BASE}/api/spreadsheet/save`, {
+      apiFetch(`/api/spreadsheet/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spreadsheetData: response }) 
@@ -241,7 +224,7 @@ export default function LikeExcelAD() {
     if (!spreadsheet || isSaving.current) return;
     isSaving.current = true;
     spreadsheet.saveAsJson().then((response: any) => {
-      fetch(`${API_BASE}/api/spreadsheet/saveX`, {
+      apiFetch(`/api/spreadsheet/saveX`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spreadsheetData: response })
@@ -267,7 +250,7 @@ export default function LikeExcelAD() {
     const file = args.file;
     const formData = new FormData();
     formData.append('file', file);
-    fetch(`${API_BASE}/api/spreadsheet/open`, { method: 'POST', body: formData })
+    apiFetch(`/api/spreadsheet/open`, { method: 'POST', body: formData })
       .then((res) => res.json())
       .then((data) => {
         if (data.jsonObject && spreadsheetRef.current) {
