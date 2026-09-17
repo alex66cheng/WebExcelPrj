@@ -14,7 +14,6 @@ const mongoose = require('mongoose');
 const http = require('http');
 const WebSocket = require('ws');
 const Y = require('yjs'); // ✨【核心修正】：把被我漏掉的 Yjs 套件宣告補回來！
-const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 
 // ==========================================
@@ -39,7 +38,6 @@ app.use(express.urlencoded({ limit: '50mb', extended: true, parameterLimit: 5000
 // my-app-pt1/src/config/googleAuth.ts) — https://console.cloud.google.com/apis/credentials
 const GOOGLE_CLIENT_ID = '414351508100-t8tgkajnjoafpjvs59v28vot4cced8r4.apps.googleusercontent.com';
 const JWT_SECRET = 'webexcelprj-cloud-jwt-secret-change-me';
-const oAuth2Client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 // Every /api/* route requires a valid session JWT except the Google sign-in
 // endpoint itself (there's no session yet at the point a client calls it).
@@ -1576,30 +1574,46 @@ app.post('/api/spreadsheet/execute-import', async (req, res) => {
 
 
 // ========================================================
-// 🌟 Google ID Token 安全簽章驗證器 + 登入路由
+// 🌟 Google Access Token 驗證器 + 登入路由
 // ========================================================
-async function verifyGoogleToken(token) {
+// 前端用 @react-oauth/google 的 useGoogleLogin（OAuth 彈窗流程，與 likeexcelG.tsx
+// 原本驗證過可用的方式一致）取得 access_token，而不是 Google 官方 "Sign In With
+// Google" 按鈕元件的 ID token —— 後者的 Google Identity Services 只允許
+// http://localhost 或 https:// 來源，在公網 IP + HTTP 環境下會被 Google 政策擋下。
+async function verifyGoogleAccessToken(accessToken) {
     try {
-        const ticket = await oAuth2Client.verifyIdToken({
-            idToken: token,
-            audience: GOOGLE_CLIENT_ID,
+        // 1. 確認這個 access token 確實是核發給本應用程式（比對 audience），
+        //    避免有人拿其他 Google App 核發的 token 冒充登入。
+        const tokenInfoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`);
+        if (!tokenInfoRes.ok) {
+            return { success: false, error: 'Google access token 無效或已過期' };
+        }
+        const tokenInfo = await tokenInfoRes.json();
+        if (tokenInfo.aud !== GOOGLE_CLIENT_ID) {
+            return { success: false, error: 'Access token 並非核發給本應用程式' };
+        }
+
+        // 2. 取得使用者基本資料
+        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+            headers: { Authorization: `Bearer ${accessToken}` },
         });
-        const payload = ticket.getPayload();
-        return { success: true, payload }; // 解出身分資訊：email, name, picture
+        if (!userInfoRes.ok) {
+            return { success: false, error: '讀取 Google 使用者資料失敗' };
+        }
+        const payload = await userInfoRes.json(); // email, name, picture
+        return { success: true, payload };
     } catch (err) {
-        console.error("❌ Google ID Token 驗證拒絕:", err.message);
+        console.error("❌ Google Access Token 驗證拒絕:", err.message);
         return { success: false, error: err.message };
     }
 }
 
-// 前端用 @react-oauth/google 的 GoogleLogin 元件取得 ID token 後 POST 到這裡，
-// 驗證通過後換發本站自己的 JWT，之後所有 /api/* 請求都帶著這個 JWT。
 app.post('/api/auth/google', async (req, res) => {
-    const { credential } = req.body;
-    if (!credential) {
-        return res.status(400).json({ success: false, message: '缺少 Google credential' });
+    const { access_token } = req.body;
+    if (!access_token) {
+        return res.status(400).json({ success: false, message: '缺少 Google access token' });
     }
-    const result = await verifyGoogleToken(credential);
+    const result = await verifyGoogleAccessToken(access_token);
     if (!result.success) {
         return res.status(401).json({ success: false, message: result.error });
     }
