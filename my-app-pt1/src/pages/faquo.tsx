@@ -1,10 +1,7 @@
 // src/pages/faquo.tsx
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { SpreadsheetComponent, SheetsDirective, SheetDirective } from '@syncfusion/ej2-react-spreadsheet';
-import { registerLicense } from '@syncfusion/ej2-base';
-
-// Replace with your actual key
-registerLicense('YOUR_SYNCFUSION_LICENSE_KEY');
+import '../config/syncfusionLicense';
 
 // Syncfusion Styles
 import "@syncfusion/ej2-base/styles/material.css";

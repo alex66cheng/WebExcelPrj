@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../config/apiBase';
+import EditDeadlineControl from '../components/EditDeadlineControl';
+import { formatDeadline, isDeadlinePassed } from '../utils/editDeadline';
 
 interface ExcelPoolFile {
   fileName: string;    // 實體檔案名稱（檔案池內唯一，下載/匯入皆以此為準）
@@ -10,6 +12,7 @@ interface ExcelPoolFile {
   editable: boolean;   // 是否可於線上編輯器開啟 (僅 xlsx / xlsm)
   size: number;        // 檔案大小 (bytes)
   uploadedAt: string;  // 上傳（最後異動）時間 ISO 字串
+  editDeadline: string | null; // ⏰ 編輯期限，超過後共同編輯者唯讀
 }
 
 // 別人邀請「我」共同編輯的檔案：多帶一個擁有者 email
@@ -29,6 +32,20 @@ function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+// ⏰ 名稱旁的編輯期限標籤：未到期顯示「可編輯至…」，到期顯示「唯讀」
+function DeadlineBadge({ editDeadline }: { editDeadline: string | null }) {
+  if (!editDeadline) return null;
+  const expired = isDeadlinePassed(editDeadline);
+  return (
+    <span
+      title={`編輯期限：${formatDeadline(editDeadline)}`}
+      className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold ${expired ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}
+    >
+      {expired ? '🔒 已過期限・唯讀' : `⏰ 至 ${formatDeadline(editDeadline)}`}
+    </span>
+  );
 }
 
 function formatTime(iso: string) {
@@ -456,6 +473,7 @@ export default function LikeExcelList() {
                         <div className="flex items-center gap-2">
                           <span>📄</span>
                           <span className="truncate max-w-xs" title={item.displayName}>{item.displayName}</span>
+                          <DeadlineBadge editDeadline={item.editDeadline} />
                           <button
                             onClick={() => startEditName(item)}
                             title="修改名稱"
@@ -561,6 +579,7 @@ export default function LikeExcelList() {
                         <div className="flex items-center gap-2">
                           <span>📄</span>
                           <span className="truncate max-w-xs" title={item.displayName}>{item.displayName}</span>
+                          <DeadlineBadge editDeadline={item.editDeadline} />
                         </div>
                       </td>
                       <td className="p-4 text-slate-500 text-xs">{item.ownerEmail}</td>
@@ -610,7 +629,7 @@ export default function LikeExcelList() {
       {inviteTarget && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-96 max-w-[90vw]">
-            <h3 className="text-lg font-bold text-slate-800 mb-1">邀請共同編輯</h3>
+            <h3 className="text-lg font-bold text-slate-800 mb-1">邀請共同編輯 / 編輯期限</h3>
             <p className="text-xs text-slate-500 mb-4 truncate" title={inviteTarget.fileName}>
               檔案：{inviteTarget.displayName}
             </p>
@@ -634,6 +653,16 @@ export default function LikeExcelList() {
                 邀請
               </button>
             </div>
+
+            <EditDeadlineControl
+              fileName={inviteTarget.fileName}
+              editDeadline={inviteTarget.editDeadline}
+              onSaved={(editDeadline) => {
+                setInviteTarget(prev => (prev ? { ...prev, editDeadline } : prev));
+                setFiles(prev => prev.map(f => (f.fileName === inviteTarget.fileName ? { ...f, editDeadline } : f)));
+              }}
+              onError={(msg) => setMessage({ type: 'error', text: `設定編輯期限失敗：${msg}` })}
+            />
 
             <div className="text-xs font-semibold text-slate-500 mb-1">已邀請的共同編輯者：</div>
             <div className="max-h-40 overflow-y-auto border border-slate-200 rounded divide-y divide-slate-100">

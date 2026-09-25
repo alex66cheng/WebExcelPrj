@@ -16,8 +16,17 @@ export interface RowHeaderMapping {
   excelColumn: string;
   dbFieldName: string;
   isGrouped: boolean;
-  filterType: 'none' | 'not_empty' | 'numeric' | 'regex'; 
-  filterExpression: string; 
+  filterType: 'none' | 'not_empty' | 'numeric' | 'regex';
+  filterExpression: string;
+}
+
+export interface ExcelPoolFile {
+  fileName: string;
+  displayName: string;
+  ext: string;
+  editable: boolean;
+  size: number;
+  uploadedAt: string;
 }
 
 const AVAILABLE_DATA_TYPES = [
@@ -44,21 +53,30 @@ rows.forEach(row => {
 
 console.log("⚡ 巨集執行完畢");`;
 
+// 範本識別碼改為系統自動產生，不再開放使用者手動輸入/修改
+function generateTemplateCode(): string {
+  const ts = Date.now().toString(36).toUpperCase();
+  const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `TPL-${ts}-${rand}`;
+}
+
 export const ExcelMappingSetup: React.FC = () => {
   const [dbTemplates, setDbTemplates] = useState<any[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState<boolean>(true);
   const [selectedTemplateCode, setSelectedTemplateCode] = useState<string>('NEW');
 
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploadingFile, setUploadingFile] = useState(false);
-  
   // 改為與資料庫 filename 欄位完全對應的狀態變數
-  const [filenameField, setFilenameField] = useState(''); 
+  const [filenameField, setFilenameField] = useState('');
 
-  const [dbHost, setDbHost] = useState('127.0.0.1');
-  const [dbUser, setDbUser] = useState('');
-  const [dbPassword, setDbPassword] = useState('');
-  const [testingConnection, setTestingConnection] = useState(false);
+  // 「資料庫對應檔名」改為從 Excel 檔案池 (like-excel-list) 選擇，不再另外上傳
+  const [poolFiles, setPoolFiles] = useState<ExcelPoolFile[]>([]);
+  const [loadingPoolFiles, setLoadingPoolFiles] = useState(true);
+
+  const [dbFile, setDbFile] = useState('');
+  const [availableDbFiles, setAvailableDbFiles] = useState<string[]>([]);
+  const [loadingDbFiles, setLoadingDbFiles] = useState(true);
+  const [newDbFileName, setNewDbFileName] = useState('');
+  const [creatingDbFile, setCreatingDbFile] = useState(false);
 
   const [templateCode, setTemplateCode] = useState('');
   const [templateName, setTemplateName] = useState('');
@@ -96,7 +114,7 @@ export const ExcelMappingSetup: React.FC = () => {
 
   // 初始掛載：從後端取得清單
   useEffect(() => {
-    apiFetch('/api/xlsx2dbsetL1')
+    apiFetch('/api/spreadsheet/get-templates')
       .then((res) => {
         if (!res.ok) throw new Error('Failed to fetch templates');
         return res.json();
@@ -111,14 +129,46 @@ export const ExcelMappingSetup: React.FC = () => {
       });
   }, []);
 
- const fetchTableColumns = async (tableName: string) => {
-  if (!tableName) return;
-  
+  // 初始掛載：取得目前伺服器上已存在的本機 SQLite 資料庫檔案清單
+  const refreshDbFiles = async () => {
+    setLoadingDbFiles(true);
+    try {
+      const response = await apiFetch('/api/spreadsheet/sqlite/list-dbs');
+      const data = await response.json();
+      if (data.success) {
+        setAvailableDbFiles(data.files || []);
+      }
+    } catch (err) {
+      console.error('Error loading sqlite db files:', err);
+    } finally {
+      setLoadingDbFiles(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshDbFiles();
+  }, []);
+
+  // 初始掛載：取得目前使用者的 Excel 檔案池清單（給「資料庫對應檔名」下拉選單用）
+  useEffect(() => {
+    setLoadingPoolFiles(true);
+    apiFetch('/api/excel-pool/list')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) setPoolFiles(data.files || []);
+      })
+      .catch(err => console.error('Error loading excel pool files:', err))
+      .finally(() => setLoadingPoolFiles(false));
+  }, []);
+
+ const fetchTableColumns = async (tableName: string, dbFileOverride?: string) => {
+  const targetDbFile = dbFileOverride ?? dbFile;
+  if (!tableName || !targetDbFile) return;
+
   try {
-    // Explicitly target port 3000 where Express is running
-    const response = await apiFetch(`/api/table-columns?table=${encodeURIComponent(tableName)}`);
+    const response = await apiFetch(`/api/table-columns?table=${encodeURIComponent(tableName)}&dbFile=${encodeURIComponent(targetDbFile)}`);
     const data = await response.json();
-    
+
     if (data.success) {
       setDbFields(data.columns);
     } else {
@@ -135,7 +185,7 @@ export const ExcelMappingSetup: React.FC = () => {
 useEffect(() => {
   setTableStatus(null); 
   if (selectedTemplateCode === 'NEW') {
-    setTemplateCode('');
+    setTemplateCode(generateTemplateCode());
     setTemplateName('');
     setDescription('');
     setTargetTable('');
@@ -147,9 +197,9 @@ useEffect(() => {
     setSkipHeaders([]);
     setTestInputs({});
     setDbFields([]);
-    setFilenameField(''); 
-    setSelectedFile(null);
-    setMacroScript(DEFAULT_MACRO_TEMPLATE); 
+    setFilenameField('');
+    setMacroScript(DEFAULT_MACRO_TEMPLATE);
+    setDbFile('');
   } else {
     const targetObj = dbTemplates.find(t => String(t.ID) === selectedTemplateCode || t.name === selectedTemplateCode);
     console.log('🔍 目前選中的範本完整物件:', targetObj); // 👈 檢查這裡有沒有 startcol, skipspace 等欄位
@@ -164,7 +214,10 @@ useEffect(() => {
       
       // 1. 對應檔名欄位
       const resolvedFilename = targetObj.filename || targetObj.filepath || '';
-      setFilenameField(resolvedFilename); 
+      setFilenameField(resolvedFilename);
+
+      // 1b. 對應綁定的本機 SQLite 資料庫檔案
+      setDbFile(targetObj.dbFile || '');
 
       // 2. 自動載入從 xlsx2dbsetL2 關聯過來的固定維度欄位對應清單
       if (targetObj.rowHeaders && targetObj.rowHeaders.length > 0) {
@@ -185,77 +238,40 @@ setTimeline({
   dbValueField: targetObj.l3Settings?.dbValueField || '',
 });
       
-      setMacroScript(DEFAULT_MACRO_TEMPLATE); 
-      
-      if (targetObj.dbname) {
-        fetchTableColumns(targetObj.dbname);
+      setMacroScript(DEFAULT_MACRO_TEMPLATE);
+
+      if (targetObj.dbname && targetObj.dbFile) {
+        fetchTableColumns(targetObj.dbname, targetObj.dbFile);
       }
     }
   }
 }, [selectedTemplateCode, dbTemplates]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setSelectedFile(file);
-      // 當使用者手動選擇檔案時，自動將檔名填入 filename 欄位中
-      setFilenameField(file.name);
-    }
-  };
-
-  const handleUploadFile = async () => {
-    if (!selectedFile) {
-      alert('請先選擇要上傳的 Excel 檔案！');
+  const handleCreateDbFile = async () => {
+    if (!newDbFileName.trim()) {
+      alert('請輸入要建立的資料庫檔名！');
       return;
     }
-    setUploadingFile(true);
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
+    setCreatingDbFile(true);
     try {
-      const response = await apiFetch('/api/spreadsheet/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      const result = await response.json();
-      if (response.ok && result.success) {
-        // 上傳成功後以伺回傳的路徑/檔名更新
-        if (result.fileName || result.filePath) {
-          setFilenameField(result.fileName || result.filePath);
-        }
-        alert('🟢 範本 Excel 檔案上傳成功並已同步更新檔名！');
-      } else {
-        alert(`❌ 上傳失敗: ${result.message}`);
-      }
-    } catch (error: any) {
-      alert(`❌ 無法連線至伺服器進行上傳: ${error.message}`);
-    } finally {
-      setUploadingFile(false);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    if (!dbHost.trim() || !dbUser.trim()) {
-      alert('請輸入完整的 Host 與 UserID！');
-      return;
-    }
-    setTestingConnection(true);
-    try {
-      const response = await apiFetch('/api/spreadsheet/test-connection', {
+      const response = await apiFetch('/api/spreadsheet/sqlite/create-db', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: dbHost, user: dbUser, password: dbPassword })
+        body: JSON.stringify({ dbFile: newDbFileName.trim() })
       });
       const result = await response.json();
       if (response.ok && result.success) {
-        alert('🟢 資料庫連線測試成功！');
+        alert(`🟢 ${result.message}`);
+        setDbFile(result.dbFile);
+        setNewDbFileName('');
+        refreshDbFiles();
       } else {
-        alert(`❌ 連線失敗: ${result.message}`);
+        alert(`❌ 建立失敗: ${result.message}`);
       }
     } catch (error: any) {
-      alert(`❌ 連線超時或伺服器錯誤: ${error.message}`);
+      alert(`❌ 無法連線至伺服器進行建立: ${error.message}`);
     } finally {
-      setTestingConnection(false);
+      setCreatingDbFile(false);
     }
   };
 
@@ -284,6 +300,10 @@ setTimeline({
       setTableStatus({ type: 'error', text: '❌ 請先輸入目標資料庫 Table Name' });
       return;
     }
+    if (!dbFile) {
+      setTableStatus({ type: 'error', text: '❌ 請先建立或選擇本機 SQLite 資料庫檔案' });
+      return;
+    }
     setCheckingTable(true);
     setTableStatus(null);
 
@@ -291,7 +311,7 @@ setTimeline({
       const response = await apiFetch('/api/spreadsheet/check-table', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetTable: targetTable, host: dbHost, user: dbUser, password: dbPassword })
+        body: JSON.stringify({ targetTable: targetTable, dbFile: dbFile })
       });
       const result = await response.json();
 
@@ -349,7 +369,11 @@ setTimeline({
       alert('請確認所有「資料行名稱」皆已填寫！');
       return;
     }
-    
+    if (!dbFile) {
+      alert('請先建立或選擇本機 SQLite 資料庫檔案！');
+      return;
+    }
+
     setCheckingTable(true);
     setIsCreateModalOpen(false);
 
@@ -360,9 +384,7 @@ setTimeline({
         body: JSON.stringify({
           targetTable: targetTable,
           fields: previewFields,
-          host: dbHost,
-          user: dbUser,
-          password: dbPassword
+          dbFile: dbFile
         })
       });
 
@@ -395,7 +417,7 @@ setTimeline({
       sheetMode: sheetMode,
       sheetValue: sheetValue,
       filename: filenameField.trim(), // 傳送資料庫對應的 filename 欄位值
-      dbConfig: { host: dbHost, user: dbUser }, 
+      dbFile: dbFile,
       rowHeaders: rowHeaders.map(({ excelColumn, dbFieldName, isGrouped, filterType, filterExpression }) => ({
         excelColumn, dbFieldName, isGrouped, filterType, filterExpression
       })),
@@ -430,7 +452,7 @@ setTimeline({
       <div className="mb-6 border-b border-gray-200 pb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">Excel 匯入範本設定 (XLSX Template Setup)</h2>
-          <p className="text-sm text-gray-500 mt-1">本機 MSSQL 專用整合介面</p>
+          <p className="text-sm text-gray-500 mt-1">本機 SQLite 專用整合介面</p>
         </div>
         
         <div className="flex items-center gap-2 bg-slate-100 p-2 rounded-lg border border-slate-200">
@@ -452,31 +474,41 @@ setTimeline({
         </div>
       </div>
 
-      {/* 📋 目標資料庫環境連線設定 */}
+      {/* 📋 目標資料庫環境設定：本機 SQLite 檔案 */}
       <div className="bg-amber-50/40 p-5 rounded-xl border border-amber-200 mb-6">
-        <label className="block text-sm font-bold text-amber-900 mb-3">⚡ 目標資料庫環境連線設定 (MSSQL Target Environment)</label>
+        <label className="block text-sm font-bold text-amber-900 mb-3">⚡ 目標資料庫環境設定 (Local SQLite Target)</label>
+        <p className="text-[11px] text-amber-700 mb-3">請先建立（或選擇既有的）本機 SQLite 資料庫檔案（.db），再將此範本綁定到該檔案。</p>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Database Host</label>
-            <input type="text" value={dbHost} onChange={e => setDbHost(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono text-sm" placeholder="127.0.0.1" />
+          <div className="md:col-span-2">
+            <label className="block text-xs font-semibold text-gray-600 mb-1">選擇既有的 .db 檔案</label>
+            <select
+              value={dbFile}
+              onChange={e => setDbFile(e.target.value)}
+              disabled={loadingDbFiles}
+              className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono text-sm"
+            >
+              <option value="">-- 尚未綁定資料庫檔案 --</option>
+              {availableDbFiles.map(f => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+            </select>
           </div>
           <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">User ID</label>
-            <input type="text" value={dbUser} onChange={e => setDbUser(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono text-sm" placeholder="sa" />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Password</label>
-            <input type="password" value={dbPassword} onChange={e => setDbPassword(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono text-sm" placeholder="••••••••" />
+            <label className="block text-xs font-semibold text-gray-600 mb-1">新增資料庫檔名</label>
+            <input type="text" value={newDbFileName} onChange={e => setNewDbFileName(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono text-sm" placeholder="例如: epsidemodb.db" />
           </div>
           <button
             type="button"
-            onClick={handleTestConnection}
-            disabled={testingConnection}
+            onClick={handleCreateDbFile}
+            disabled={creatingDbFile}
             className="w-full py-2 px-4 bg-amber-600 text-white font-bold text-sm rounded-lg hover:bg-amber-700 transition-all shadow-sm disabled:opacity-50"
           >
-            {testingConnection ? '⏳ 測試中...' : '🔌 測試資料庫連線'}
+            {creatingDbFile ? '⏳ 建立中...' : '🗄️ 建立並綁定 .db 檔案'}
           </button>
         </div>
+        {dbFile && (
+          <p className="text-xs text-amber-800 font-mono font-semibold mt-3">✅ 目前綁定的資料庫檔案：{dbFile}</p>
+        )}
       </div>
 
       {/* 📋 步驟 1：定義範本基本資訊與動態資料庫檔名欄位 */}
@@ -499,14 +531,14 @@ setTimeline({
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1">範本識別碼 / ID</label>
-            <input 
-              type="text" 
-              value={templateCode} 
-              disabled={selectedTemplateCode !== 'NEW'} 
-              onChange={e => setTemplateCode(e.target.value)} 
-              className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono uppercase disabled:bg-gray-100 focus:ring-2 focus:ring-blue-500" 
-              placeholder="自動載入或自訂 ID"
+            <label className="block text-sm font-semibold text-gray-700 mb-1">範本識別碼 / ID（系統自動產生）</label>
+            <input
+              type="text"
+              value={templateCode}
+              disabled
+              readOnly
+              className="w-full p-2 border border-gray-300 rounded-md bg-gray-100 font-mono uppercase cursor-not-allowed"
+              placeholder="系統自動產生"
             />
           </div>
           <div className="md:col-span-2">
@@ -531,40 +563,38 @@ setTimeline({
           </div>
         </div>
 
-        {/* 動態綁定資料庫 filename 欄位的輸入區與上傳控制 */}
+        {/* 動態綁定資料庫 filename 欄位：從 Excel 檔案池選擇 */}
         <div className="bg-white/80 p-4 rounded-lg border border-blue-200 grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <div>
+            <label className="block text-xs font-bold text-blue-900 mb-1">📁 從 Excel 檔案池選擇</label>
+            <select
+              value={poolFiles.some(f => f.fileName === filenameField) ? filenameField : ''}
+              onChange={e => setFilenameField(e.target.value)}
+              disabled={loadingPoolFiles}
+              className="w-full p-2 border border-blue-300 rounded-md bg-white text-sm"
+            >
+              <option value="">-- 請選擇檔案池中的 Excel 檔案 --</option>
+              {poolFiles.map(f => (
+                <option key={f.fileName} value={f.fileName}>{f.displayName} ({f.fileName})</option>
+              ))}
+            </select>
+            {!loadingPoolFiles && poolFiles.length === 0 && (
+              <p className="text-[11px] text-amber-600 mt-1">檔案池目前沒有檔案，請先至「Like Excel List」頁面上傳。</p>
+            )}
+          </div>
+
           <div className="md:col-span-2">
             <label className="block text-xs font-bold text-blue-900 mb-1">📂 資料庫對應檔名 (filename 欄位)</label>
-            <input 
-              type="text" 
-              value={filenameField} 
-              onChange={e => setFilenameField(e.target.value)} 
-              className="w-full p-2 border border-blue-300 rounded-md bg-white font-mono text-sm text-blue-900 font-semibold focus:ring-2 focus:ring-blue-500" 
-              placeholder="例如: AAA.xlsx 或由資料庫動態載入"
+            <input
+              type="text"
+              value={filenameField}
+              readOnly
+              className="w-full p-2 border border-blue-300 rounded-md bg-slate-100 font-mono text-sm text-blue-900 font-semibold cursor-not-allowed"
+              placeholder="請於左側從檔案池選擇一個 Excel 檔案"
             />
             <p className="text-[11px] text-slate-500 mt-1">
-              * 此欄位直接對應資料庫中的 <code className="text-blue-700 font-bold">filename</code> 設定，會隨選取的範本動態改變。
+              * 此欄位直接對應資料庫中的 <code className="text-blue-700 font-bold">filename</code> 設定，由左側的檔案池選擇自動帶入。
             </p>
-          </div>
-          
-          <div>
-            <label className="block text-xs font-bold text-blue-900 mb-1">📤 選擇並上傳新檔案</label>
-            <div className="flex gap-2">
-              <input 
-                type="file" 
-                accept=".xlsx, .xls" 
-                onChange={handleFileChange} 
-                className="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-2 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 file:cursor-pointer hover:file:bg-blue-100"
-              />
-              <button
-                type="button"
-                onClick={handleUploadFile}
-                disabled={uploadingFile || !selectedFile}
-                className="px-3 py-1.5 bg-blue-600 text-white font-bold text-xs rounded hover:bg-blue-700 transition-all disabled:opacity-50 shrink-0 shadow-sm"
-              >
-                {uploadingFile ? '⏳...' : '上傳'}
-              </button>
-            </div>
           </div>
         </div>
       </div>
@@ -574,7 +604,7 @@ setTimeline({
         <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-4">⚙️ 步驟 2：工作表 (Worksheet) 與目標資料庫</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1">本機 MSSQL Table Name (dbname)</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">本機 SQLite Table Name (dbname)</label>
             <div className="flex gap-2">
               <input 
                 type="text" 
@@ -667,10 +697,17 @@ setTimeline({
                     </td>
                     <td className="p-2 text-center text-gray-400">➡️</td>
                     <td className="p-2">
-                      <select value={row.dbFieldName} onChange={e => handleUpdateRowHeader(row.id, 'dbFieldName', e.target.value)} className="w-full p-1.5 border border-gray-300 rounded bg-white text-sm font-mono">
-                        <option value="">-- 請選擇 --</option>
-                        {dbFields.map(f => (<option key={f.name} value={f.name}>{f.name} ({f.type})</option>))}
-                      </select>
+                      <input
+                        type="text"
+                        list={`dbfield-options-${row.id}`}
+                        value={row.dbFieldName}
+                        onChange={e => handleUpdateRowHeader(row.id, 'dbFieldName', e.target.value)}
+                        className="w-full p-1.5 border border-gray-300 rounded bg-white text-sm font-mono"
+                        placeholder="輸入資料庫欄位名稱"
+                      />
+                      <datalist id={`dbfield-options-${row.id}`}>
+                        {dbFields.map(f => (<option key={f.name} value={f.name}>{f.type}</option>))}
+                      </datalist>
                     </td>
                     <td className="p-2">
                       <label className="inline-flex items-center text-xs text-gray-600 bg-white p-1.5 border border-gray-200 rounded w-full cursor-pointer select-none">
@@ -786,6 +823,39 @@ setTimeline({
     </div>
   </div>
 
+  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-gray-200 pt-4 mb-4">
+    <div>
+      <label className="block text-sm font-semibold text-gray-700 mb-1">年份對應資料庫欄位 (DB Year Field)</label>
+      <input
+        type="text"
+        value={timeline?.dbYearField ?? ''}
+        onChange={e => handleUpdateTimeline('dbYearField', e.target.value)}
+        className="w-full p-2 border border-gray-300 rounded-md font-mono bg-white text-slate-800"
+        placeholder="E.g. Year"
+      />
+    </div>
+    <div>
+      <label className="block text-sm font-semibold text-gray-700 mb-1">項目對應資料庫欄位 (DB Item Field)</label>
+      <input
+        type="text"
+        value={timeline?.dbItemField ?? ''}
+        onChange={e => handleUpdateTimeline('dbItemField', e.target.value)}
+        className="w-full p-2 border border-gray-300 rounded-md font-mono bg-white text-slate-800"
+        placeholder="E.g. Month"
+      />
+    </div>
+    <div>
+      <label className="block text-sm font-semibold text-gray-700 mb-1">數值對應資料庫欄位 (DB Value Field)</label>
+      <input
+        type="text"
+        value={timeline?.dbValueField ?? ''}
+        onChange={e => handleUpdateTimeline('dbValueField', e.target.value)}
+        className="w-full p-2 border border-gray-300 rounded-md font-mono bg-white text-slate-800"
+        placeholder="E.g. Value"
+      />
+    </div>
+  </div>
+
   <div className="border-t border-gray-200 pt-4">
     <label className="block text-xs font-semibold text-gray-700 mb-1">📐 空間跳過設定 (Skip Space)</label>
     <div className="flex items-center gap-2 max-w-xs">
@@ -854,7 +924,7 @@ setTimeline({
         </button>
       </div>
 
-      {/* SQL Server 表格設計工具彈窗 (Modal) */}
+      {/* SQLite 表格設計工具彈窗 (Modal) */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl border border-gray-300 w-full max-w-3xl overflow-hidden flex flex-col">

@@ -77,6 +77,9 @@ export default function Layout() {
                 <NavLink to="/like-excel-list" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
                   Like Excel List
                 </NavLink>
+                <NavLink to="/db-console" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
+                  DB Console
+                </NavLink>
               </div>
             )}
           </div>
