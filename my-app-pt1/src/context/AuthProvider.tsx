@@ -14,7 +14,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((data) => {
         if (data.authenticated && data.token) {
           setAuthToken(data.token);
-          setUser({ domain: data.domain, username: data.username });
+          setUser({
+            domain: data.domain,
+            username: data.username,
+            // 與 WebSideAPI 的 adUserFromToken 相同規則：舊版 ADAuthAPI 沒回傳 email 時退回 username@domain
+            email: String(data.email || `${data.username}@${data.domain}`).toLowerCase(),
+            name: data.displayName || data.username,
+          });
         } else {
           setAccessDenied(true);
         }

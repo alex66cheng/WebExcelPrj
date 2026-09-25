@@ -1,7 +1,9 @@
 // src/pages/LikeExcelList.tsx
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_BASE } from '../config/apiBase';
+import { apiFetch } from '../config/apiBase';
+import EditDeadlineControl from '../components/EditDeadlineControl';
+import { formatDeadline, isDeadlinePassed } from '../utils/editDeadline';
 
 interface ExcelPoolFile {
   fileName: string;    // 實體檔案名稱（檔案池內唯一，下載/匯入皆以此為準）
@@ -10,6 +12,12 @@ interface ExcelPoolFile {
   editable: boolean;   // 是否可於線上編輯器開啟 (僅 xlsx / xlsm)
   size: number;        // 檔案大小 (bytes)
   uploadedAt: string;  // 上傳（最後異動）時間 ISO 字串
+  editDeadline: string | null; // ⏰ 編輯期限，超過後共同編輯者唯讀
+}
+
+// 別人邀請「我」共同編輯的檔案：多帶一個擁有者 email
+interface SharedPoolFile extends ExcelPoolFile {
+  ownerEmail: string;
 }
 
 const EXT_STYLE: Record<string, string> = {
@@ -24,6 +32,20 @@ function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+// ⏰ 名稱旁的編輯期限標籤：未到期顯示「可編輯至…」，到期顯示「唯讀」
+function DeadlineBadge({ editDeadline }: { editDeadline: string | null }) {
+  if (!editDeadline) return null;
+  const expired = isDeadlinePassed(editDeadline);
+  return (
+    <span
+      title={`編輯期限：${formatDeadline(editDeadline)}`}
+      className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold ${expired ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}
+    >
+      {expired ? '🔒 已過期限・唯讀' : `⏰ 至 ${formatDeadline(editDeadline)}`}
+    </span>
+  );
 }
 
 function formatTime(iso: string) {
@@ -48,11 +70,22 @@ export default function LikeExcelList() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
 
+  // 「與我共享」分頁：其他人邀請我共同編輯的檔案
+  const [activeTab, setActiveTab] = useState<'mine' | 'shared'>('mine');
+  const [sharedFiles, setSharedFiles] = useState<SharedPoolFile[]>([]);
+  const [sharedLoading, setSharedLoading] = useState(true);
+
+  // 邀請共同編輯彈窗
+  const [inviteTarget, setInviteTarget] = useState<ExcelPoolFile | null>(null);
+  const [inviteEmailInput, setInviteEmailInput] = useState('');
+  const [inviteList, setInviteList] = useState<string[]>([]);
+  const [inviteLoading, setInviteLoading] = useState(false);
+
   // 讀取伺服器端 Excel 檔案池清單
   const loadFiles = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/excel-pool/list`);
+      const res = await apiFetch('/api/excel-pool/list');
       const data = await res.json();
       if (!data.success) throw new Error(data.message || '讀取清單失敗');
       setFiles(data.files as ExcelPoolFile[]);
@@ -67,6 +100,25 @@ export default function LikeExcelList() {
     loadFiles();
   }, [loadFiles]);
 
+  // 讀取別人邀請「我」共同編輯的檔案清單
+  const loadSharedFiles = useCallback(async () => {
+    setSharedLoading(true);
+    try {
+      const res = await apiFetch('/api/excel-pool/shared-with-me');
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || '讀取共享清單失敗');
+      setSharedFiles(data.files as SharedPoolFile[]);
+    } catch (err) {
+      setMessage({ type: 'error', text: `無法讀取與我共享的檔案：${(err as Error).message}` });
+    } finally {
+      setSharedLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSharedFiles();
+  }, [loadSharedFiles]);
+
   // 上傳檔案（支援多檔）
   const uploadFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -76,7 +128,7 @@ export default function LikeExcelList() {
     setUploading(true);
     setMessage(null);
     try {
-      const res = await fetch(`${API_BASE}/api/excel-pool/upload`, { method: 'POST', body: formData });
+      const res = await apiFetch('/api/excel-pool/upload', { method: 'POST', body: formData });
       const data = await res.json();
       if (!data.success) throw new Error(data.message || '上傳失敗');
       setMessage({ type: 'success', text: data.message });
@@ -92,7 +144,7 @@ export default function LikeExcelList() {
   const handleDelete = async (fileName: string) => {
     if (!window.confirm(`確定要從檔案池刪除「${fileName}」嗎？此動作無法復原。`)) return;
     try {
-      const res = await fetch(`${API_BASE}/api/excel-pool/${encodeURIComponent(fileName)}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/excel-pool/${encodeURIComponent(fileName)}`, { method: 'DELETE' });
       const data = await res.json();
       if (!data.success) throw new Error(data.message || '刪除失敗');
       setMessage({ type: 'success', text: `已刪除 ${fileName}` });
@@ -121,7 +173,7 @@ export default function LikeExcelList() {
     }
     setSavingName(true);
     try {
-      const res = await fetch(`${API_BASE}/api/excel-pool/${encodeURIComponent(fileName)}/name`, {
+      const res = await apiFetch(`/api/excel-pool/${encodeURIComponent(fileName)}/name`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ displayName: newName })
@@ -139,7 +191,9 @@ export default function LikeExcelList() {
   };
 
   // --- 開啟線上編輯器 ---
-  const handleOpen = (file: ExcelPoolFile) => {
+  // ownerEmail 有帶值時，代表這是「別人共享給我」的檔案：帶著 owner 參數開啟，
+  // 讓 likeexcel 頁面存取檔案擁有者的檔案池，並加入同一個即時協作房間。
+  const handleOpen = (file: ExcelPoolFile, ownerEmail?: string) => {
     if (!file.editable) {
       setMessage({
         type: 'error',
@@ -147,7 +201,70 @@ export default function LikeExcelList() {
       });
       return;
     }
-    navigate(`/like-excel?poolFile=${encodeURIComponent(file.fileName)}`);
+    const ownerQuery = ownerEmail ? `&owner=${encodeURIComponent(ownerEmail)}` : '';
+    navigate(`/like-excel?poolFile=${encodeURIComponent(file.fileName)}${ownerQuery}`);
+  };
+
+  const handleDownload = async (file: ExcelPoolFile, ownerEmail?: string) => {
+    try {
+      const ownerQuery = ownerEmail ? `?owner=${encodeURIComponent(ownerEmail)}` : '';
+      const res = await apiFetch(`/api/excel-pool/download/${encodeURIComponent(file.fileName)}${ownerQuery}`);
+      if (!res.ok) throw new Error('下載失敗');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setMessage({ type: 'error', text: `下載失敗：${(err as Error).message}` });
+    }
+  };
+
+  // --- 邀請共同編輯 ---
+  const openInviteModal = (file: ExcelPoolFile) => {
+    setInviteTarget(file);
+    setInviteEmailInput('');
+    setInviteList([]);
+    apiFetch(`/api/excel-pool/${encodeURIComponent(file.fileName)}/shares`)
+      .then(res => res.json())
+      .then(data => { if (data.success) setInviteList(data.invitedEmails || []); })
+      .catch(err => console.error('讀取共同編輯名單失敗:', err));
+  };
+
+  const submitInvite = () => {
+    const email = inviteEmailInput.trim();
+    if (!email || !inviteTarget) return;
+
+    setInviteLoading(true);
+    apiFetch(`/api/excel-pool/${encodeURIComponent(inviteTarget.fileName)}/invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || '邀請失敗');
+        return data;
+      })
+      .then(() => {
+        setInviteList(prev => (prev.includes(email) ? prev : [...prev, email]));
+        setInviteEmailInput('');
+      })
+      .catch(err => setMessage({ type: 'error', text: `邀請共同編輯失敗：${(err as Error).message}` }))
+      .finally(() => setInviteLoading(false));
+  };
+
+  const revokeInvite = (email: string) => {
+    if (!inviteTarget) return;
+    apiFetch(`/api/excel-pool/${encodeURIComponent(inviteTarget.fileName)}/invite/${encodeURIComponent(email)}`, {
+      method: 'DELETE'
+    })
+      .then(() => setInviteList(prev => prev.filter(e => e !== email)))
+      .catch(err => console.error('取消共同編輯權限失敗:', err));
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -220,6 +337,28 @@ export default function LikeExcelList() {
         </div>
       )}
 
+      {/* 分頁切換：我的檔案 / 與我共享 */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200">
+        <button
+          onClick={() => setActiveTab('mine')}
+          className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
+            activeTab === 'mine' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-600'
+          }`}
+        >
+          📁 我的檔案
+        </button>
+        <button
+          onClick={() => setActiveTab('shared')}
+          className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
+            activeTab === 'shared' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-600'
+          }`}
+        >
+          🤝 與我共享 {sharedFiles.length > 0 && `(${sharedFiles.length})`}
+        </button>
+      </div>
+
+      {activeTab === 'mine' && (
+      <>
       {/* 拖曳上傳區 */}
       <div
         onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -334,6 +473,7 @@ export default function LikeExcelList() {
                         <div className="flex items-center gap-2">
                           <span>📄</span>
                           <span className="truncate max-w-xs" title={item.displayName}>{item.displayName}</span>
+                          <DeadlineBadge editDeadline={item.editDeadline} />
                           <button
                             onClick={() => startEditName(item)}
                             title="修改名稱"
@@ -374,12 +514,18 @@ export default function LikeExcelList() {
                       >
                         開啟
                       </button>
-                      <a
-                        href={`${API_BASE}/api/excel-pool/download/${encodeURIComponent(item.fileName)}`}
+                      <button
+                        onClick={() => handleDownload(item)}
                         className="ml-2 text-blue-600 hover:text-blue-800 font-semibold text-xs bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition-colors"
                       >
                         下載
-                      </a>
+                      </button>
+                      <button
+                        onClick={() => openInviteModal(item)}
+                        className="ml-2 text-violet-600 hover:text-violet-800 font-semibold text-xs bg-violet-50 hover:bg-violet-100 px-2.5 py-1.5 rounded-lg transition-colors"
+                      >
+                        邀請
+                      </button>
                       <button
                         onClick={() => handleDelete(item.fileName)}
                         className="ml-2 text-red-600 hover:text-red-800 font-semibold text-xs bg-red-50 hover:bg-red-100 px-2.5 py-1.5 rounded-lg transition-colors"
@@ -402,6 +548,152 @@ export default function LikeExcelList() {
           </table>
         </div>
       </div>
+      </>
+      )}
+
+      {activeTab === 'shared' && (
+        <div className="flex-1 border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-gray-200 text-slate-400 text-xs font-bold uppercase tracking-wider">
+                  <th className="p-4">名稱</th>
+                  <th className="p-4">擁有者</th>
+                  <th className="p-4 w-24">格式</th>
+                  <th className="p-4 w-28 text-right">檔案大小</th>
+                  <th className="p-4 w-40">最後異動</th>
+                  <th className="p-4 w-40 text-center">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 text-sm">
+                {sharedLoading ? (
+                  <tr>
+                    <td colSpan={6} className="text-center p-10 text-gray-400 italic bg-gray-50/30">
+                      ⏳ 正在讀取共享清單...
+                    </td>
+                  </tr>
+                ) : sharedFiles.length > 0 ? (
+                  sharedFiles.map((item) => (
+                    <tr key={`${item.ownerEmail}:${item.fileName}`} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="p-4 font-medium text-slate-900">
+                        <div className="flex items-center gap-2">
+                          <span>📄</span>
+                          <span className="truncate max-w-xs" title={item.displayName}>{item.displayName}</span>
+                          <DeadlineBadge editDeadline={item.editDeadline} />
+                        </div>
+                      </td>
+                      <td className="p-4 text-slate-500 text-xs">{item.ownerEmail}</td>
+                      <td className="p-4">
+                        <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${EXT_STYLE[item.ext] || 'bg-slate-100 text-slate-700'}`}>
+                          {item.ext}
+                        </span>
+                      </td>
+                      <td className="p-4 text-right font-mono font-medium text-slate-600">
+                        {formatSize(item.size)}
+                      </td>
+                      <td className="p-4 text-xs text-slate-500">
+                        {formatTime(item.uploadedAt)}
+                      </td>
+                      <td className="p-4 text-center whitespace-nowrap">
+                        <button
+                          onClick={() => handleOpen(item, item.ownerEmail)}
+                          disabled={!item.editable}
+                          title={item.editable ? '在線上編輯器開啟' : `.${item.ext} 格式不支援線上開啟`}
+                          className="text-emerald-700 hover:text-emerald-900 font-semibold text-xs bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-50"
+                        >
+                          開啟
+                        </button>
+                        <button
+                          onClick={() => handleDownload(item, item.ownerEmail)}
+                          className="ml-2 text-blue-600 hover:text-blue-800 font-semibold text-xs bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition-colors"
+                        >
+                          下載
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="text-center p-10 text-gray-400 italic bg-gray-50/30">
+                      💡 目前沒有人邀請你共同編輯檔案。
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 邀請共同編輯對話框 */}
+      {inviteTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-96 max-w-[90vw]">
+            <h3 className="text-lg font-bold text-slate-800 mb-1">邀請共同編輯 / 編輯期限</h3>
+            <p className="text-xs text-slate-500 mb-4 truncate" title={inviteTarget.fileName}>
+              檔案：{inviteTarget.displayName}
+            </p>
+
+            <label className="block text-sm font-medium text-slate-700 mb-1">對方的 Email：</label>
+            <div className="flex gap-2 mb-4">
+              <input
+                type="email"
+                value={inviteEmailInput}
+                onChange={(e) => setInviteEmailInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitInvite(); }}
+                placeholder="name@example.com"
+                className="flex-1 border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-500"
+                autoFocus
+              />
+              <button
+                onClick={submitInvite}
+                disabled={inviteLoading || !inviteEmailInput.trim()}
+                className="px-4 py-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 rounded transition-colors disabled:opacity-50"
+              >
+                邀請
+              </button>
+            </div>
+
+            <EditDeadlineControl
+              fileName={inviteTarget.fileName}
+              editDeadline={inviteTarget.editDeadline}
+              onSaved={(editDeadline) => {
+                setInviteTarget(prev => (prev ? { ...prev, editDeadline } : prev));
+                setFiles(prev => prev.map(f => (f.fileName === inviteTarget.fileName ? { ...f, editDeadline } : f)));
+              }}
+              onError={(msg) => setMessage({ type: 'error', text: `設定編輯期限失敗：${msg}` })}
+            />
+
+            <div className="text-xs font-semibold text-slate-500 mb-1">已邀請的共同編輯者：</div>
+            <div className="max-h-40 overflow-y-auto border border-slate-200 rounded divide-y divide-slate-100">
+              {inviteList.length === 0 ? (
+                <div className="text-xs text-slate-400 italic p-3">尚未邀請任何人</div>
+              ) : (
+                inviteList.map((email) => (
+                  <div key={email} className="flex items-center justify-between px-3 py-2 text-sm text-slate-700">
+                    <span className="truncate">{email}</span>
+                    <button
+                      onClick={() => revokeInvite(email)}
+                      className="text-xs text-red-600 hover:text-red-800 font-semibold ml-2 shrink-0"
+                    >
+                      移除
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={() => setInviteTarget(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors"
+              >
+                關閉
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

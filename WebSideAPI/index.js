@@ -4,6 +4,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
 const sql = require('mssql');
+const { DatabaseSync } = require('node:sqlite');
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm'); // 🌟 原本的 Node.js 虛擬沙盒模組，完整保留
@@ -14,7 +15,11 @@ const mongoose = require('mongoose');
 const http = require('http');
 const WebSocket = require('ws');
 const Y = require('yjs'); // ✨【核心修正】：把被我漏掉的 Yjs 套件宣告補回來！
-const { OAuth2Client } = require('google-auth-library');
+const syncProtocol = require('y-protocols/sync');
+const awarenessProtocol = require('y-protocols/awareness');
+const encoding = require('lib0/encoding');
+const decoding = require('lib0/decoding');
+const jwt = require('jsonwebtoken');
 
 // ==========================================
 // 📝 MongoDB Connection for Cell Logs
@@ -34,11 +39,19 @@ app.use(express.urlencoded({ limit: '50mb', extended: true, parameterLimit: 5000
 // ==========================================
 // 🔐 Auth (enterprise build: Windows AD via IIS)
 // ==========================================
-const jwt = require('jsonwebtoken');
 // Shared secret with ADAuthAPI/Program.cs's JwtSharedSecret — both sides must
 // use the exact same string so this service can verify tokens ADAuthAPI signs
 // after IIS validates the user's Windows identity against AD.
 const JWT_SECRET = 'webexcelprj-enterprise-ad-jwt-secret-change-me';
+
+// ADAuthAPI 簽發的 JWT → req.user。檔案池、邀請共同編輯、編輯期限、個人 SQLite 資料庫
+// 都是以 email 當作使用者 ID（與雲端版的 Google email 相同），ADAuthAPI 會查 AD 的 mail
+// 屬性放進 token；舊版 ADAuthAPI 簽的 token 沒有 email 時，退回 username@domain。
+function adUserFromToken(token) {
+    const payload = jwt.verify(token, JWT_SECRET); // { domain, username, email?, name? }
+    const email = String(payload.email || `${payload.username}@${payload.domain}`).toLowerCase().trim();
+    return { ...payload, email, name: payload.name || payload.username };
+}
 
 // Every /api/* route requires a valid AD-issued JWT — there is no local login
 // route on this build, identity always comes from ADAuthAPI.
@@ -49,7 +62,7 @@ app.use('/api', (req, res, next) => {
         return res.status(401).json({ success: false, message: '未登入或缺少驗證權杖' });
     }
     try {
-        req.user = jwt.verify(token, JWT_SECRET); // { domain, username }
+        req.user = adUserFromToken(token);
         next();
     } catch (err) {
         return res.status(401).json({ success: false, message: '權杖無效或已過期' });
@@ -80,6 +93,157 @@ const diskStorage = multer.diskStorage({
     }
 });
 const uploadDisk = multer({ storage: diskStorage });
+
+
+// ==========================================
+// 🗄️ XLSX Template Setup 專用：本機 SQLite 資料庫檔案管理
+// ==========================================
+// 取代原本的遠端 MSSQL host/user/password 連線設定 —— 範本改為「先建立一個
+// 本機 .db 檔案，再把 Excel 範本綁定到該檔案」，檔案存放於 sqlite-dbs/。
+const sqliteDbDirectory = path.join(__dirname, 'sqlite-dbs');
+if (!fs.existsSync(sqliteDbDirectory)) {
+    fs.mkdirSync(sqliteDbDirectory, { recursive: true });
+}
+
+const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function isValidIdentifier(name) {
+    return typeof name === 'string' && IDENTIFIER_PATTERN.test(name);
+}
+
+// 🔒 每個使用者只能看到/操作自己的 SQLite 資料庫檔案：以登入者 email 為鍵，
+// 各自獨立一個子目錄（對照下方 Excel 檔案池的 getUserPoolDir() 作法）。
+// safeUserDirName() 定義在下方「Excel 檔案池」區塊，因 function 宣告會整檔提升(hoist)，此處可直接呼叫。
+function getUserSqliteDir(email) {
+    const dir = path.join(sqliteDbDirectory, safeUserDirName(email));
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    return dir;
+}
+
+// 只允許存取「該使用者自己」SQLite 子目錄底下、副檔名為 .db 的檔案，避免路徑穿越。
+function resolveSqliteDbPath(dbFile, email) {
+    const safeName = path.basename(String(dbFile || '').trim());
+    if (!safeName || !safeName.toLowerCase().endsWith('.db')) return null;
+    return path.join(getUserSqliteDir(email), safeName);
+}
+
+// 每個 .db 檔案只保留一個常駐連線，避免每個 request 都重新開檔/關檔
+// （對照 MSSQL 那邊的 pools/getPool() 快取模式）。
+const sqliteDbPool = new Map(); // 完整檔案路徑 (已含使用者子目錄) -> DatabaseSync 實例
+
+function getSqliteDb(dbFile, email) {
+    const dbPath = resolveSqliteDbPath(dbFile, email);
+    if (!dbPath) throw new Error('無效的 SQLite 資料庫檔名');
+
+    const cacheKey = dbPath; // 完整路徑已包含使用者子目錄，天然區隔不同使用者
+    const cached = sqliteDbPool.get(cacheKey);
+    if (cached) return cached;
+
+    console.log(`🔌 開啟並快取本機 SQLite 連線 [${cacheKey}]...`);
+    const db = new DatabaseSync(dbPath); // 檔案不存在時會自動建立
+    sqliteDbPool.set(cacheKey, db);
+    return db;
+}
+
+// 服務關閉時，把目前池內所有 SQLite 連線平順關閉，避免留下鎖檔。
+function closeAllSqliteDbs() {
+    for (const [cacheKey, db] of sqliteDbPool) {
+        try { db.close(); } catch (err) { console.error(`⚠️ 關閉 SQLite 連線 [${cacheKey}] 失敗:`, err.message); }
+    }
+    sqliteDbPool.clear();
+}
+process.on('exit', closeAllSqliteDbs);
+process.on('SIGINT', () => { closeAllSqliteDbs(); process.exit(0); });
+process.on('SIGTERM', () => { closeAllSqliteDbs(); process.exit(0); });
+
+app.get('/api/spreadsheet/sqlite/list-dbs', (req, res) => {
+    try {
+        const userDir = getUserSqliteDir(req.user.email);
+        const files = fs.readdirSync(userDir).filter(f => f.toLowerCase().endsWith('.db'));
+        res.json({ success: true, files });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+app.post('/api/spreadsheet/sqlite/create-db', (req, res) => {
+    const requestedName = String(req.body?.dbFile || '').trim();
+    if (!requestedName) {
+        return res.status(400).json({ success: false, message: '請輸入資料庫檔名' });
+    }
+    const dbFile = requestedName.toLowerCase().endsWith('.db') ? requestedName : `${requestedName}.db`;
+    const dbPath = resolveSqliteDbPath(dbFile, req.user.email);
+    if (!dbPath) {
+        return res.status(400).json({ success: false, message: '無效的資料庫檔名' });
+    }
+    try {
+        const alreadyExisted = fs.existsSync(dbPath);
+        getSqliteDb(dbFile, req.user.email); // 建立（或開啟既有的）SQLite 檔案並存入連線池
+        res.json({
+            success: true,
+            dbFile: path.basename(dbPath),
+            message: alreadyExisted
+                ? `已綁定既有的本機 SQLite 資料庫檔案：${path.basename(dbPath)}`
+                : `已成功建立本機 SQLite 資料庫檔案：${path.basename(dbPath)}`,
+        });
+    } catch (err) {
+        console.error('❌ 建立 SQLite 資料庫檔案失敗:', err.message);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 🌟 DB Console 頁面專用：對使用者選定的本機 SQLite 資料庫檔案，直接執行使用者輸入的
+// 任意 SQL 指令（SELECT 查詢回傳表格資料；INSERT/UPDATE/DELETE 回傳影響列數；
+// CREATE/DROP/多語句腳本則透過 db.exec() 執行）。dbPath 已經過 resolveSqliteDbPath()
+// 限制在該登入者自己的 sqlite-dbs/<user> 子目錄內，不會讓使用者操作到別人的資料庫檔案。
+app.post('/api/spreadsheet/sqlite/execute-sql', (req, res) => {
+    const dbFile = req.body?.dbFile;
+    const sqlText = String(req.body?.sql || '').trim();
+
+    if (!sqlText) {
+        return res.status(400).json({ success: false, message: '請輸入要執行的 SQL 指令' });
+    }
+
+    const dbPath = resolveSqliteDbPath(dbFile, req.user.email);
+    if (!dbPath || !fs.existsSync(dbPath)) {
+        return res.status(400).json({ success: false, message: '請先選擇一個已存在的本機 SQLite 資料庫檔案' });
+    }
+
+    try {
+        const db = getSqliteDb(dbFile, req.user.email);
+
+        try {
+            // 先嘗試當作「單一語句」處理，才能分辨是否為查詢型指令（有回傳列）
+            const stmt = db.prepare(sqlText);
+            if (/^\s*(select|pragma|explain)/i.test(sqlText)) {
+                const rows = stmt.all();
+                return res.json({
+                    success: true,
+                    mode: 'rows',
+                    columns: rows.length > 0 ? Object.keys(rows[0]) : [],
+                    rows,
+                    message: `查詢完成，共 ${rows.length} 筆結果。`
+                });
+            }
+            const info = stmt.run();
+            return res.json({
+                success: true,
+                mode: 'run',
+                changes: info.changes,
+                lastInsertRowid: info.lastInsertRowid !== undefined ? String(info.lastInsertRowid) : null,
+                message: `執行完成，共影響 ${info.changes} 列。`
+            });
+        } catch (prepareErr) {
+            // prepare() 只接受單一語句；多語句腳本或部分 DDL 改用 exec() 執行（無回傳資料）
+            db.exec(sqlText);
+            return res.json({ success: true, mode: 'exec', message: '執行完成（多語句或 DDL 腳本，無回傳資料）。' });
+        }
+    } catch (err) {
+        console.error('❌ 執行 SQL 指令失敗:', err.message);
+        return res.status(400).json({ success: false, message: err.message });
+    }
+});
 
 
 // ==========================================
@@ -257,23 +421,38 @@ function decodeOriginalName(name) {
     }
 }
 
-// 防止 ../ 路徑穿越，只允許存取檔案池目錄下的檔案
-function resolvePoolFile(fileName) {
+// 🔒 每個使用者只能看到/操作自己的檔案池：以登入者 email 為鍵，各自獨立一個子目錄
+function safeUserDirName(email) {
+    const normalized = String(email || '').toLowerCase().trim();
+    const safe = normalized.replace(/[^a-z0-9._@-]/g, '_');
+    return safe || 'unknown';
+}
+
+function getUserPoolDir(email) {
+    const dir = path.join(excelPoolDirectory, safeUserDirName(email));
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    return dir;
+}
+
+// 防止 ../ 路徑穿越，且只允許存取「該使用者自己」檔案池目錄下的檔案
+function resolvePoolFile(userDir, fileName) {
     const safeName = path.basename(String(fileName || ''));
     if (!safeName || safeName === '.' || safeName === '..') return null;
-    const fullPath = path.join(excelPoolDirectory, safeName);
-    if (path.dirname(fullPath) !== excelPoolDirectory) return null;
+    const fullPath = path.join(userDir, safeName);
+    if (path.dirname(fullPath) !== userDir) return null;
     return fullPath;
 }
 
-// 同名檔案不覆蓋，改以 "檔名 (2).xlsx" 方式遞增
-function uniquePoolName(originalName) {
+// 同名檔案不覆蓋，改以 "檔名 (2).xlsx" 方式遞增（僅在該使用者自己的目錄內比對）
+function uniquePoolName(userDir, originalName) {
     const safeName = path.basename(decodeOriginalName(originalName)).replace(/[\\/:*?"<>|]/g, '_');
     const ext = path.extname(safeName);
     const base = path.basename(safeName, ext);
     let candidate = `${base}${ext}`;
     let counter = 2;
-    while (fs.existsSync(path.join(excelPoolDirectory, candidate))) {
+    while (fs.existsSync(path.join(userDir, candidate))) {
         candidate = `${base} (${counter})${ext}`;
         counter++;
     }
@@ -282,10 +461,14 @@ function uniquePoolName(originalName) {
 
 const poolStorage = multer.diskStorage({
     destination: function (req, file, cb) {
-        cb(null, excelPoolDirectory);
+        try {
+            cb(null, getUserPoolDir(req.user && req.user.email));
+        } catch (err) {
+            cb(err);
+        }
     },
     filename: function (req, file, cb) {
-        cb(null, uniquePoolName(file.originalname));
+        cb(null, uniquePoolName(getUserPoolDir(req.user && req.user.email), file.originalname));
     }
 });
 
@@ -306,25 +489,69 @@ const uploadPool = multer({
 //    以 JSON 檔保存 { 實體檔名: { displayName, updatedAt } }，
 //    與實體檔名脫鉤，改名不影響下載網址與既有匯入流程。
 // ------------------------------------------
-const excelPoolMetaFile = path.join(__dirname, 'excel-pool-meta.json');
+function poolMetaFile(userDir) {
+    return path.join(userDir, '.pool-meta.json');
+}
 
-function readPoolMeta() {
+function readPoolMeta(userDir) {
     try {
-        if (!fs.existsSync(excelPoolMetaFile)) return {};
-        return JSON.parse(fs.readFileSync(excelPoolMetaFile, 'utf8')) || {};
+        const metaFile = poolMetaFile(userDir);
+        if (!fs.existsSync(metaFile)) return {};
+        return JSON.parse(fs.readFileSync(metaFile, 'utf8')) || {};
     } catch (err) {
         console.error('⚠️ 讀取檔案池中繼資料失敗，改以空白設定繼續:', err.message);
         return {};
     }
 }
 
-function writePoolMeta(meta) {
-    fs.writeFileSync(excelPoolMetaFile, JSON.stringify(meta, null, 2), 'utf8');
+function writePoolMeta(userDir, meta) {
+    fs.writeFileSync(poolMetaFile(userDir), JSON.stringify(meta, null, 2), 'utf8');
 }
 
 // 沒有自訂名稱時，預設顯示為「去掉副檔名的檔名」
 function defaultDisplayName(fileName) {
     return path.basename(fileName, path.extname(fileName));
+}
+
+// ⏰ 編輯期限：擁有者可替檔案設定 editDeadline（ISO 時間，存在 .pool-meta.json），
+//    超過期限後受邀的共同編輯者只能檢視、不能再編輯/回存；擁有者本人不受限制，可隨時調整或清除期限。
+function getPoolEditLock(userDir, fileName, isOwner) {
+    const meta = readPoolMeta(userDir);
+    const editDeadline = (meta[fileName] && meta[fileName].editDeadline) || null;
+    const expired = !!editDeadline && Date.now() >= new Date(editDeadline).getTime();
+    return { editDeadline, readOnly: !isOwner && expired };
+}
+
+// ------------------------------------------
+// 🤝 邀請他人共同編輯檔案池中的檔案
+//    以 MongoDB 記錄「誰的哪個檔案，邀請了哪個 email」，不搬動實體檔案，
+//    被邀請者存取時直接讀寫擁有者的檔案池目錄。
+// ------------------------------------------
+const fileShareSchema = new mongoose.Schema({
+    ownerEmail: { type: String, required: true, lowercase: true, trim: true },
+    fileName: { type: String, required: true },
+    invitedEmail: { type: String, required: true, lowercase: true, trim: true },
+}, { timestamps: true });
+fileShareSchema.index({ ownerEmail: 1, fileName: 1, invitedEmail: 1 }, { unique: true });
+const FileShare = mongoose.model('FileShare', fileShareSchema, 'file_shares');
+
+// 依 req.user + (query/body 帶入的) owner，解析出實際可存取的檔案路徑：
+// - 沒帶 owner，或 owner 就是自己 → 存取自己的檔案池
+// - owner 是別人 → 必須有一筆對應的邀請紀錄才允許存取，讀寫都落在「擁有者」的目錄下
+async function resolvePoolFileAccess(req, fileName) {
+    const requesterEmail = String(req.user.email || '').toLowerCase().trim();
+    const ownerParam = String((req.query && req.query.owner) || (req.body && req.body.owner) || '').toLowerCase().trim();
+    const ownerEmail = ownerParam || requesterEmail;
+
+    if (ownerEmail !== requesterEmail) {
+        const share = await FileShare.findOne({ ownerEmail, fileName: path.basename(String(fileName || '')), invitedEmail: requesterEmail });
+        if (!share) return null;
+    }
+
+    const userDir = getUserPoolDir(ownerEmail);
+    const fullPath = resolvePoolFile(userDir, fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) return null;
+    return { fullPath, userDir, ownerEmail, isOwner: ownerEmail === requesterEmail };
 }
 
 // 上傳一個或多個 Excel 檔案進檔案池
@@ -347,20 +574,22 @@ app.post('/api/excel-pool/upload', (req, res) => {
     });
 });
 
-// 取得檔案池內所有 Excel 檔案清單
+// 取得檔案池內所有 Excel 檔案清單（僅限自己上傳的檔案）
 app.get('/api/excel-pool/list', (req, res) => {
     try {
-        const meta = readPoolMeta();
-        const files = fs.readdirSync(excelPoolDirectory)
+        const userDir = getUserPoolDir(req.user.email);
+        const meta = readPoolMeta(userDir);
+        const files = fs.readdirSync(userDir)
             .filter(name => ALLOWED_EXCEL_EXT.includes(path.extname(name).toLowerCase()))
             .map(name => {
-                const stat = fs.statSync(path.join(excelPoolDirectory, name));
+                const stat = fs.statSync(path.join(userDir, name));
                 const ext = path.extname(name).toLowerCase().replace('.', '');
                 return {
                     fileName: name,
                     displayName: (meta[name] && meta[name].displayName) || defaultDisplayName(name),
                     ext: ext,
                     editable: EDITABLE_EXCEL_EXT.includes(ext), // 僅 OOXML 格式可於線上編輯器開啟
+                    editDeadline: (meta[name] && meta[name].editDeadline) || null,
                     size: stat.size,
                     uploadedAt: stat.mtime.toISOString()
                 };
@@ -376,7 +605,8 @@ app.get('/api/excel-pool/list', (req, res) => {
 
 // 修改單一檔案的顯示名稱 / 別名 (不更動實體檔名)
 app.patch('/api/excel-pool/:fileName/name', (req, res) => {
-    const fullPath = resolvePoolFile(req.params.fileName);
+    const userDir = getUserPoolDir(req.user.email);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
     if (!fullPath || !fs.existsSync(fullPath)) {
         return res.status(404).json({ success: false, message: '找不到指定檔案' });
     }
@@ -391,9 +621,9 @@ app.patch('/api/excel-pool/:fileName/name', (req, res) => {
 
     try {
         const fileName = path.basename(fullPath);
-        const meta = readPoolMeta();
-        meta[fileName] = { displayName, updatedAt: new Date().toISOString() };
-        writePoolMeta(meta);
+        const meta = readPoolMeta(userDir);
+        meta[fileName] = { ...meta[fileName], displayName, updatedAt: new Date().toISOString() };
+        writePoolMeta(userDir, meta);
         console.log(`🏷️ 已更新檔案顯示名稱: ${fileName} → ${displayName}`);
         return res.json({ success: true, message: '名稱已更新', fileName, displayName });
     } catch (err) {
@@ -402,12 +632,48 @@ app.patch('/api/excel-pool/:fileName/name', (req, res) => {
     }
 });
 
-// 開啟檔案池中的檔案，轉成 Syncfusion Spreadsheet 可載入的 JSON
-app.get('/api/excel-pool/open/:fileName', async (req, res) => {
-    const fullPath = resolvePoolFile(req.params.fileName);
+// ⏰ 設定 / 清除單一檔案的編輯期限（僅擁有者本人可設定）
+//    body: { editDeadline: ISO 時間字串 }，傳 null 或空字串代表清除期限（恢復永久可編輯）
+app.patch('/api/excel-pool/:fileName/deadline', (req, res) => {
+    const userDir = getUserPoolDir(req.user.email);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
     if (!fullPath || !fs.existsSync(fullPath)) {
         return res.status(404).json({ success: false, message: '找不到指定檔案' });
     }
+
+    const raw = req.body && req.body.editDeadline;
+    let editDeadline = null;
+    if (raw) {
+        const d = new Date(raw);
+        if (Number.isNaN(d.getTime())) {
+            return res.status(400).json({ success: false, message: '無效的期限時間' });
+        }
+        editDeadline = d.toISOString();
+    }
+
+    try {
+        const fileName = path.basename(fullPath);
+        const meta = readPoolMeta(userDir);
+        const entry = { ...meta[fileName] };
+        if (editDeadline) entry.editDeadline = editDeadline;
+        else delete entry.editDeadline;
+        meta[fileName] = entry;
+        writePoolMeta(userDir, meta);
+        console.log(`⏰ 已${editDeadline ? `設定 ${fileName} 編輯期限: ${editDeadline}` : `清除 ${fileName} 的編輯期限`}`);
+        return res.json({ success: true, message: editDeadline ? '編輯期限已設定' : '編輯期限已清除', fileName, editDeadline });
+    } catch (err) {
+        console.error('❌ 設定編輯期限失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 開啟檔案池中的檔案，轉成 Syncfusion Spreadsheet 可載入的 JSON
+app.get('/api/excel-pool/open/:fileName', async (req, res) => {
+    const access = await resolvePoolFileAccess(req, req.params.fileName);
+    if (!access) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案，或您沒有此檔案的存取權限' });
+    }
+    const { fullPath, userDir, isOwner } = access;
 
     const fileName = path.basename(fullPath);
     const ext = path.extname(fileName).toLowerCase().replace('.', '');
@@ -420,16 +686,22 @@ app.get('/api/excel-pool/open/:fileName', async (req, res) => {
 
     try {
         const { result, sheetCount, sheetNames } = await excelBufferToSpreadsheetJson(fs.readFileSync(fullPath));
-        const meta = readPoolMeta();
-        console.log(`📖 已開啟檔案池檔案: ${fileName} (共 ${sheetCount} 個工作表)`);
+        const meta = readPoolMeta(userDir);
+        const { editDeadline, readOnly } = getPoolEditLock(userDir, fileName, isOwner);
+        console.log(`📖 已開啟檔案池檔案: ${fileName} (共 ${sheetCount} 個工作表)${readOnly ? ' [已過編輯期限，唯讀]' : ''}`);
         return res.json({
             success: true,
             fileName,
             displayName: (meta[fileName] && meta[fileName].displayName) || defaultDisplayName(fileName),
             sheetCount,
             sheetNames,
-            // 線上編輯器只載入第一個工作表，因此只有「單一工作表的 .xlsx」覆蓋回存才不會遺失內容
-            canOverwrite: ext === 'xlsx' && sheetCount === 1,
+            // 線上編輯器只載入/編輯「可見」工作表，隱藏工作表不載入也不送到前端；
+            // 覆蓋回存時後端會就地覆寫這些可見工作表，隱藏工作表完全不去動、原封不動保留，
+            // 因此只要是 .xlsx 就能覆蓋回存，不限單一工作表
+            canOverwrite: ext === 'xlsx',
+            isOwner,
+            editDeadline,
+            readOnly,
             jsonObject: JSON.stringify(result)
         });
     } catch (err) {
@@ -441,11 +713,8 @@ app.get('/api/excel-pool/open/:fileName', async (req, res) => {
 // ------------------------------------------
 // 💾 將 Syncfusion Spreadsheet JSON 還原為 ExcelJS 活頁簿 (保留基本樣式)
 // ------------------------------------------
-function spreadsheetJsonToWorkbook(workbookJson, sheetName) {
-    const workbook = new ExcelJS.Workbook();
-    const sourceSheet = (workbookJson.sheets && workbookJson.sheets[0]) || {};
-    const worksheet = workbook.addWorksheet(sheetName || sourceSheet.name || 'Sheet1');
-
+function populateWorksheetFromSpreadsheetJson(worksheet, sourceSheet) {
+    sourceSheet = sourceSheet || {};
     const sourceRows = Array.isArray(sourceSheet.rows) ? sourceSheet.rows : Object.values(sourceSheet.rows || {});
     const merges = [];
 
@@ -459,8 +728,16 @@ function spreadsheetJsonToWorkbook(workbookJson, sheetName) {
             if (!cell) return;
             const targetCell = targetRow.getCell(colIdx + 1);
 
+            // 🧮 開檔時 Syncfusion 算不出來的公式（IFNA/XLOOKUP/表格參照…）是以快取結果顯示、沒有帶公式的；
+            //    就地覆寫原檔時，若該格的值仍等於原公式的快取結果（使用者沒改過），就保留原公式不動，
+            //    否則存檔會把這些公式全部變成寫死的數值。使用者改成別的值時才照常覆寫。
+            const keepOriginalFormula = !cell.formula && targetCell.formula &&
+                String(cell.value ?? '') === excelValueToSpreadsheetValue(targetCell.result);
+
             // 值：公式優先，數字字串還原為數值，避免回寫後全部變成文字
-            if (cell.formula) {
+            if (keepOriginalFormula) {
+                // 原公式與快取結果原封不動
+            } else if (cell.formula) {
                 targetCell.value = { formula: String(cell.formula).replace(/^=/, '') };
             } else if (cell.value !== undefined && cell.value !== null && cell.value !== '') {
                 const raw = cell.value;
@@ -470,11 +747,18 @@ function spreadsheetJsonToWorkbook(workbookJson, sheetName) {
                     : raw;
             }
 
+            // 🔢 數字格式（貨幣/百分比/日期等）：回存時原樣寫回 ExcelJS 的 numFmt，
+            // 否則格式化過的數字存檔後會全部變回沒有格式的純數字
+            if (cell.format && cell.format !== 'General') {
+                targetCell.numFmt = cell.format;
+            }
+
             const style = cell.style || {};
             const font = {};
             if (style.fontWeight === 'bold') font.bold = true;
             if (style.fontStyle === 'italic') font.italic = true;
             if (style.fontSize) font.size = parseFloat(style.fontSize);
+            if (style.fontFamily) font.name = style.fontFamily;
             if (style.color) font.color = { argb: `FF${String(style.color).replace('#', '')}` };
             if (Object.keys(font).length > 0) targetCell.font = font;
 
@@ -492,9 +776,11 @@ function spreadsheetJsonToWorkbook(workbookJson, sheetName) {
             if (style.wrap) alignment.wrapText = true;
             if (Object.keys(alignment).length > 0) targetCell.alignment = alignment;
 
+            // 🖼️ 框線：還原成實際的線寬/線型/顏色，而不是全部寫死成 1px 黑色細線
             const border = {};
             ['Top', 'Bottom', 'Left', 'Right'].forEach(side => {
-                if (style[`border${side}`]) border[side.toLowerCase()] = { style: 'thin', color: { argb: 'FF000000' } };
+                const cssVal = style[`border${side}`];
+                if (cssVal) border[side.toLowerCase()] = cssBorderToExcelBorderSide(cssVal);
             });
             if (Object.keys(border).length > 0) targetCell.border = border;
 
@@ -502,7 +788,10 @@ function spreadsheetJsonToWorkbook(workbookJson, sheetName) {
             const rowSpan = cell.rowSpan || 1;
             const colSpan = cell.colSpan || 1;
             if (rowSpan > 1 || colSpan > 1) {
-                merges.push([rowIdx + 1, colIdx + 1, rowIdx + rowSpan - 1, colIdx + colSpan]);
+                // top/left 用 1-based (rowIdx+1 / colIdx+1)，bottom/right 要再加上 span 才對：
+                // bottom = top + rowSpan - 1 = rowIdx + rowSpan（先前寫成 rowIdx + rowSpan - 1，
+                // 比正確值少了 1 列，導致垂直合併儲存格存檔後永遠少合併最後一列）
+                merges.push([rowIdx + 1, colIdx + 1, rowIdx + rowSpan, colIdx + colSpan]);
             }
         });
         targetRow.commit();
@@ -520,16 +809,89 @@ function spreadsheetJsonToWorkbook(workbookJson, sheetName) {
             // 重疊或無效的合併範圍直接略過，不中斷整份檔案的回存
         }
     });
+}
+
+// 🌟 這是讀不到原檔時的退路（整份重建，而非就地覆寫）：把 JSON 裡「可見」的每個工作表
+//    都還原回一份全新的活頁簿。stateByName（可選）用來把原檔各工作表的隱藏狀態依名稱比對
+//    套用回新產生的工作表——但因為讀原檔已經失敗，通常沒有東西可套用，隱藏工作表在這條
+//    退路上無論如何都無法保留（原檔內容讀不到，自然也重建不出來）。
+function spreadsheetJsonToWorkbook(workbookJson, stateByName) {
+    const workbook = new ExcelJS.Workbook();
+    const sourceSheets = Array.isArray(workbookJson.sheets) && workbookJson.sheets.length > 0
+        ? workbookJson.sheets
+        : [{}];
+
+    sourceSheets.forEach((sourceSheet, idx) => {
+        const name = (sourceSheet && sourceSheet.name) || `Sheet${idx + 1}`;
+        const worksheet = workbook.addWorksheet(name);
+        populateWorksheetFromSpreadsheetJson(worksheet, sourceSheet);
+        if (stateByName && stateByName[name] && stateByName[name] !== 'visible') {
+            worksheet.state = stateByName[name];
+        }
+    });
+
+    // .xlsx 規格要求至少一個可見工作表；若套用隱藏狀態後全部變成隱藏，強制留下第一個可見
+    if (!workbook.worksheets.some(ws => ws.state === 'visible')) {
+        workbook.worksheets[0].state = 'visible';
+    }
 
     return workbook;
+}
+
+// 🌟 檔案池「覆蓋回存」的高擬真版本：不整份重建活頁簿，而是直接在讀進來的原始活頁簿上
+//    就地覆寫 JSON 涵蓋到的儲存格值/樣式/合併範圍，其餘原檔屬性——凍結窗格、頁面設定、
+//    自動篩選、已定義名稱、嵌入圖片、索引標籤顏色、欄/列隱藏與群組層級、活頁簿主題/內建
+//    屬性等 Syncfusion JSON 完全沒有承載的東西——全部原封不動留在原檔物件上，不會因為
+//    整份用 ExcelJS 重新產生活頁簿而被拿掉，回存後才能盡量貼近原始檔案。
+function patchWorkbookFromSpreadsheetJson(existingWorkbook, workbookJson, stateByName) {
+    const sourceSheets = Array.isArray(workbookJson.sheets) ? workbookJson.sheets : [];
+
+    sourceSheets.forEach((sourceSheet, idx) => {
+        const name = (sourceSheet && sourceSheet.name) || `Sheet${idx + 1}`;
+        // 🌟 開檔現在只會把「可見」分頁送到編輯器，隱藏分頁不在 JSON 裡——所以這裡的陣列索引
+        // idx 不再等於原始活頁簿的分頁索引（原始活頁簿仍然包含隱藏分頁），一定要優先用分頁
+        // 名稱比對，索引只能當作「真的找不到同名分頁」時的備援，否則隱藏分頁一多，
+        // 存檔就會把內容寫到位置對不上的錯誤分頁去。
+        let worksheet = existingWorkbook.getWorksheet(name) || existingWorkbook.worksheets[idx];
+        if (!worksheet) {
+            worksheet = existingWorkbook.addWorksheet(name);
+        }
+
+        // 先解除原本的合併範圍再依 JSON 重新合併，避免使用者在編輯器裡調整過合併範圍時，
+        // 殘留原檔舊的合併與新的合併範圍互相衝突而整段被 ExcelJS 靜默忽略。
+        // 🐢 注意：這裡故意直接讀 worksheet._merges，不要改成 worksheet.model.merges ——
+        // 跟 workbook.model 一樣，worksheet.model 也是即算 getter，會把「這張工作表的每一列」
+        // 重新序列化一次，對幾千列的大分頁來說，單純只是為了拿合併範圍就會多花不少時間。
+        const existingMerges = Object.values(worksheet._merges || {});
+        existingMerges.forEach(merge => {
+            try { worksheet.unMergeCells(merge.top, merge.left, merge.bottom, merge.right); } catch (e) { /* 忽略無效範圍 */ }
+        });
+
+        populateWorksheetFromSpreadsheetJson(worksheet, sourceSheet);
+
+        if (stateByName && stateByName[name] && stateByName[name] !== 'visible') {
+            worksheet.state = stateByName[name];
+        }
+    });
+
+    if (!existingWorkbook.worksheets.some(ws => ws.state === 'visible')) {
+        existingWorkbook.worksheets[0].state = 'visible';
+    }
+
+    return existingWorkbook;
 }
 
 // 將線上編輯器的內容回存至檔案池 (覆蓋原檔或另存新檔)
 app.post('/api/excel-pool/save', async (req, res) => {
     const { fileName, mode, spreadsheetData } = req.body || {};
-    const fullPath = resolvePoolFile(fileName);
-    if (!fullPath || !fs.existsSync(fullPath)) {
-        return res.status(404).json({ success: false, message: '找不到來源檔案' });
+    const access = await resolvePoolFileAccess(req, fileName);
+    if (!access) {
+        return res.status(404).json({ success: false, message: '找不到來源檔案，或您沒有此檔案的存取權限' });
+    }
+    const { fullPath, userDir, isOwner } = access;
+
+    if (getPoolEditLock(userDir, path.basename(fullPath), isOwner).readOnly) {
+        return res.status(403).json({ success: false, message: '已超過編輯期限，此檔案目前為唯讀，無法回存' });
     }
 
     const workbookJson = spreadsheetData && (spreadsheetData.Workbook || spreadsheetData);
@@ -541,43 +903,52 @@ app.post('/api/excel-pool/save', async (req, res) => {
     const ext = path.extname(sourceName).toLowerCase();
 
     try {
-        let targetName = sourceName;
+        if (mode === 'overwrite' && ext !== '.xlsx') {
+            return res.status(400).json({
+                success: false,
+                message: `${ext} 檔案不支援覆蓋回存 (會遺失巨集或原始格式)，請改用另存新檔`
+            });
+        }
 
-        if (mode === 'overwrite') {
-            // 編輯器只載入第一個工作表，覆蓋多工作表或含巨集的檔案會造成內容遺失，因此擋下
-            if (ext !== '.xlsx') {
-                return res.status(400).json({
-                    success: false,
-                    message: `${ext} 檔案不支援覆蓋回存 (會遺失巨集或原始格式)，請改用另存新檔`
-                });
-            }
-            const existing = new ExcelJS.Workbook();
-            await existing.xlsx.readFile(fullPath);
-            if (existing.worksheets.length > 1) {
-                return res.status(400).json({
-                    success: false,
-                    message: `原檔含 ${existing.worksheets.length} 個工作表，但編輯器只載入第一個，覆蓋會遺失其餘工作表，請改用另存新檔`
-                });
-            }
-        } else {
+        // 🌟 回存前先把原檔整份讀進來當底稿：編輯器只會顯示/編輯原檔裡「可見」的工作表，
+        //    隱藏工作表完全不會載入，這裡順便記下每個可見工作表目前的隱藏狀態（理論上都是
+        //    'visible'，但保留這段以防萬一），回存時依名稱比對套用回去。
+        //    baseWorkbook 若成功讀到，回存時會直接在它上面就地覆寫，而不是整份重建，這樣
+        //    凍結窗格/頁面設定/自動篩選/已定義名稱/嵌入圖片/索引標籤顏色/欄列群組層級，
+        //    以及完全沒被編輯器載入過的隱藏工作表本身，都不會被存檔動作動到，盡量貼近原始檔案。
+        const originalStateByName = {};
+        let baseWorkbook = null;
+        try {
+            baseWorkbook = new ExcelJS.Workbook();
+            await baseWorkbook.xlsx.readFile(fullPath);
+            baseWorkbook.worksheets.forEach(ws => { originalStateByName[ws.name] = ws.state; });
+        } catch (e) {
+            // 讀取原檔失敗（例如來源檔案本身已損毀）就退回整份重建，不套用隱藏狀態
+            baseWorkbook = null;
+        }
+
+        let targetName = sourceName;
+        if (mode !== 'overwrite') {
             const now = new Date();
             const pad = (n) => String(n).padStart(2, '0');
             const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-            targetName = uniquePoolName(`${path.basename(sourceName, ext)} (編輯 ${stamp}).xlsx`);
+            targetName = uniquePoolName(userDir, `${path.basename(sourceName, ext)} (編輯 ${stamp}).xlsx`);
         }
 
-        const workbook = spreadsheetJsonToWorkbook(workbookJson, workbookJson.sheets[0].name);
-        await workbook.xlsx.writeFile(path.join(excelPoolDirectory, targetName));
+        const workbook = baseWorkbook
+            ? patchWorkbookFromSpreadsheetJson(baseWorkbook, workbookJson, originalStateByName)
+            : spreadsheetJsonToWorkbook(workbookJson, originalStateByName);
+        await workbook.xlsx.writeFile(path.join(userDir, targetName));
 
-        // 另存新檔時，沿用原檔的別名作為新檔別名的基礎
+        // 另存新檔時，沿用原檔的別名作為新檔別名的基礎；覆蓋原檔則不需要另外建立別名
         if (targetName !== sourceName) {
-            const meta = readPoolMeta();
+            const meta = readPoolMeta(userDir);
             const baseName = (meta[sourceName] && meta[sourceName].displayName) || defaultDisplayName(sourceName);
             meta[targetName] = { displayName: `${baseName} (編輯版)`, updatedAt: new Date().toISOString() };
-            writePoolMeta(meta);
+            writePoolMeta(userDir, meta);
         }
 
-        console.log(`💾 編輯內容已回存至檔案池: ${targetName} (mode=${mode || 'new'})`);
+        console.log(`💾 編輯內容已回存至檔案池: ${targetName} (mode=${mode || 'new'}, 共 ${workbookJson.sheets.length} 個工作表)`);
         return res.json({
             success: true,
             message: mode === 'overwrite' ? '已覆蓋原檔' : `已另存為「${targetName}」`,
@@ -590,17 +961,18 @@ app.post('/api/excel-pool/save', async (req, res) => {
 });
 
 // 下載 / 開啟檔案池中的單一檔案
-app.get('/api/excel-pool/download/:fileName', (req, res) => {
-    const fullPath = resolvePoolFile(req.params.fileName);
-    if (!fullPath || !fs.existsSync(fullPath)) {
-        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+app.get('/api/excel-pool/download/:fileName', async (req, res) => {
+    const access = await resolvePoolFileAccess(req, req.params.fileName);
+    if (!access) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案，或您沒有此檔案的存取權限' });
     }
-    return res.download(fullPath, path.basename(fullPath));
+    return res.download(access.fullPath, path.basename(access.fullPath));
 });
 
 // 從檔案池刪除單一檔案
 app.delete('/api/excel-pool/:fileName', (req, res) => {
-    const fullPath = resolvePoolFile(req.params.fileName);
+    const userDir = getUserPoolDir(req.user.email);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
     if (!fullPath || !fs.existsSync(fullPath)) {
         return res.status(404).json({ success: false, message: '找不到指定檔案' });
     }
@@ -609,10 +981,10 @@ app.delete('/api/excel-pool/:fileName', (req, res) => {
         fs.unlinkSync(fullPath);
 
         // 一併清掉別名設定，避免同名檔案重新上傳時沿用到舊別名
-        const meta = readPoolMeta();
+        const meta = readPoolMeta(userDir);
         if (meta[fileName]) {
             delete meta[fileName];
-            writePoolMeta(meta);
+            writePoolMeta(userDir, meta);
         }
         console.log(`🗑️ 已從 Excel 檔案池刪除: ${fileName}`);
         return res.json({ success: true, message: '檔案已刪除' });
@@ -622,32 +994,117 @@ app.delete('/api/excel-pool/:fileName', (req, res) => {
     }
 });
 
+// 邀請他人共同編輯檔案池中的某個檔案（僅擁有者本人可邀請）
+app.post('/api/excel-pool/:fileName/invite', async (req, res) => {
+    const ownerEmail = String(req.user.email || '').toLowerCase().trim();
+    const userDir = getUserPoolDir(ownerEmail);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    }
 
-// ==========================================
-// 🌟 擴充新增路由 0-B：動態測試資料庫環境連線狀態
-// ==========================================
-app.post('/api/spreadsheet/test-connection', async (req, res) => {
-    const { host, user, password } = req.body;
+    const invitedEmail = String((req.body && req.body.email) || '').toLowerCase().trim();
+    if (!invitedEmail || !invitedEmail.includes('@')) {
+        return res.status(400).json({ success: false, message: '請提供有效的 email' });
+    }
+    if (invitedEmail === ownerEmail) {
+        return res.status(400).json({ success: false, message: '不能邀請自己' });
+    }
+
     try {
-        const testConfig = {
-            user: user,
-            password: password,
-            server: host,
-            database: defaultDbConfig.database,
-            options: { encrypt: false, trustServerCertificate: true },
-            connectTimeout: 5000 
-        };
-        
-        const testPool = new sql.ConnectionPool(testConfig);
-        await testPool.connect();
-        await testPool.close(); 
-
-        return res.json({ success: true, message: '連線成功！該環境目前狀態健全。' });
+        const fileName = path.basename(fullPath);
+        await FileShare.findOneAndUpdate(
+            { ownerEmail, fileName, invitedEmail },
+            { ownerEmail, fileName, invitedEmail },
+            { upsert: true, returnDocument: 'after' }
+        );
+        console.log(`🤝 已邀請 ${invitedEmail} 共同編輯 ${fileName} (擁有者: ${ownerEmail})`);
+        return res.json({ success: true, message: `已邀請 ${invitedEmail} 共同編輯`, fileName, invitedEmail });
     } catch (err) {
-        console.error("DB Dynamic Test Connection Failed:", err.message);
-        return res.status(200).json({ success: false, message: err.message });
+        console.error('❌ 邀請共同編輯失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
     }
 });
+
+// 取得單一檔案目前已邀請的共同編輯者名單
+// 擁有者本人，或已被邀請的共同編輯者（帶 ?owner= 查詢），都可以查看這份名單，
+// 藉此在畫面上顯示「這份檔案有哪些人可以共同編輯」；邀請/取消邀請仍僅限擁有者本人操作。
+app.get('/api/excel-pool/:fileName/shares', async (req, res) => {
+    const access = await resolvePoolFileAccess(req, req.params.fileName);
+    if (!access) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案，或您沒有此檔案的存取權限' });
+    }
+    try {
+        const fileName = path.basename(access.fullPath);
+        const shares = await FileShare.find({ ownerEmail: access.ownerEmail, fileName }).sort({ createdAt: 1 });
+        return res.json({
+            success: true,
+            fileName,
+            ownerEmail: access.ownerEmail,
+            invitedEmails: shares.map(s => s.invitedEmail)
+        });
+    } catch (err) {
+        console.error('❌ 讀取共同編輯名單失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 取消某人共同編輯的權限（僅擁有者本人可取消）
+app.delete('/api/excel-pool/:fileName/invite/:email', async (req, res) => {
+    const ownerEmail = String(req.user.email || '').toLowerCase().trim();
+    const userDir = getUserPoolDir(ownerEmail);
+    const fullPath = resolvePoolFile(userDir, req.params.fileName);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ success: false, message: '找不到指定檔案' });
+    }
+    try {
+        const fileName = path.basename(fullPath);
+        const invitedEmail = String(req.params.email || '').toLowerCase().trim();
+        await FileShare.deleteOne({ ownerEmail, fileName, invitedEmail });
+        console.log(`🚫 已取消 ${invitedEmail} 對 ${fileName} 的共同編輯權限`);
+        return res.json({ success: true, message: `已取消 ${invitedEmail} 的共同編輯權限` });
+    } catch (err) {
+        console.error('❌ 取消共同編輯權限失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 取得別人邀請「我」共同編輯的檔案清單
+app.get('/api/excel-pool/shared-with-me', async (req, res) => {
+    const myEmail = String(req.user.email || '').toLowerCase().trim();
+    try {
+        const shares = await FileShare.find({ invitedEmail: myEmail }).sort({ createdAt: -1 });
+        const files = shares.map(share => {
+            const ownerDir = getUserPoolDir(share.ownerEmail);
+            const fullPath = resolvePoolFile(ownerDir, share.fileName);
+            if (!fullPath || !fs.existsSync(fullPath)) return null;
+            const stat = fs.statSync(fullPath);
+            const meta = readPoolMeta(ownerDir);
+            const ext = path.extname(share.fileName).toLowerCase().replace('.', '');
+            return {
+                fileName: share.fileName,
+                displayName: (meta[share.fileName] && meta[share.fileName].displayName) || defaultDisplayName(share.fileName),
+                ext,
+                editable: EDITABLE_EXCEL_EXT.includes(ext),
+                ...getPoolEditLock(ownerDir, share.fileName, false),
+                size: stat.size,
+                uploadedAt: stat.mtime.toISOString(),
+                ownerEmail: share.ownerEmail
+            };
+        }).filter(Boolean);
+        return res.json({ success: true, count: files.length, files });
+    } catch (err) {
+        console.error('❌ 讀取共同編輯檔案清單失敗:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+
+// ==========================================
+// 🌟 擴充新增路由 0-B（已淘汰）：原本用來動態測試遠端 MSSQL 連線狀態，
+// XLSX Template Setup 改綁本機 SQLite 檔案後改用
+// /api/spreadsheet/sqlite/list-dbs、/api/spreadsheet/sqlite/create-db。
+// ==========================================
 
 
 // ==========================================
@@ -655,9 +1112,63 @@ app.post('/api/spreadsheet/test-connection', async (req, res) => {
 // ==========================================
 //const fs = require('fs'); // 確保有引入 fs
 
-function fixColor(colorObj) {
+// 🎨 Office 預設佈景主題色盤 (background1/text1/background2/text2/accent1~6)。
+//    Excel 儲存格顏色常常不是寫死的 RGB，而是「主題色 + 索引 (theme) + 深淺 (tint)」，
+//    未自訂佈景主題的活頁簿幾乎都是用這組 Office 預設值，因此用它來還原顏色，
+//    比完全不處理（直接漏掉整個顏色）好得多；若活頁簿真的自訂了佈景主題色，這裡只能算近似值。
+const OFFICE_THEME_COLORS = ['FFFFFF', '000000', 'E7E6E6', '44546A', '4472C4', 'ED7D31', 'A5A5A5', 'FFC000', '5B9BD5', '70AD47'];
+
+// 依 OOXML 規格套用 tint（正值往白色調亮、負值往黑色調暗）
+function applyColorTint(hex, tint) {
+    if (!tint) return hex;
+    const num = parseInt(hex, 16);
+    const adjust = (component) => {
+        const value = tint < 0 ? component * (1 + tint) : component * (1 - tint) + 255 * tint;
+        return Math.max(0, Math.min(255, Math.round(value)));
+    };
+    const r = adjust((num >> 16) & 0xFF);
+    const g = adjust((num >> 8) & 0xFF);
+    const b = adjust(num & 0xFF);
+    return [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+// 🎨 從活頁簿實際的 theme1.xml 解析出「這份檔案真正的」佈景主題色盤，取代寫死的 Office 預設值。
+//    ExcelJS 讀檔時會把原始 theme XML 字串原封不動存在 workbook.model.themes 裡（不會解析成物件），
+//    如果檔案本身自訂過佈景主題色（例如公司範本常見的紫色/自訂配色），先前完全沒有讀取這份 XML、
+//    一律套用 Office 預設色盤，導致自訂主題色的儲存格（背景/字型顏色）開檔後顏色整個跑掉
+//    （紫色橫幅變黃色、卡其色列變綠色之類），跟原檔肉眼看起來完全不同。
+//    OOXML 儲存格佈景主題色索引順序是 0=背景1(lt1) 1=文字1(dk1) 2=背景2(lt2) 3=文字2(dk2) 4~9=accent1~6，
+//    跟 clrScheme XML 裡 dk1/lt1 的先後順序相反，這是規格既有的錯位，解析時要對調過來。
+function parseWorkbookThemeColors(workbook) {
+    // 🐢 注意：這裡故意直接讀 workbook._themes，不要改成 workbook.model.themes —
+    //    ExcelJS 的 `.model` 是一個「即算」getter，每次存取都會把整份活頁簿（含全部工作表
+    //    每一格）重新序列化兩次（worksheets + sheets），大檔案（幾十萬格）光是為了拿主題色
+    //    XML 字串就白白多花幾百毫秒。_themes 是讀檔時就已經存好的原始欄位，直接拿不會有這個代價。
+    const themes = workbook._themes;
+    const xml = themes && (themes.theme1 || Object.values(themes)[0]);
+    if (!xml) return null;
+
+    const extract = (tag) => {
+        const block = xml.match(new RegExp(`<a:${tag}>([\\s\\S]*?)</a:${tag}>`));
+        if (!block) return undefined;
+        const srgb = block[1].match(/srgbClr val="([0-9A-Fa-f]{6})"/);
+        if (srgb) return srgb[1].toUpperCase();
+        const sys = block[1].match(/lastClr="([0-9A-Fa-f]{6})"/);
+        return sys ? sys[1].toUpperCase() : undefined;
+    };
+
+    const table = [
+        extract('lt1'), extract('dk1'), extract('lt2'), extract('dk2'),
+        extract('accent1'), extract('accent2'), extract('accent3'),
+        extract('accent4'), extract('accent5'), extract('accent6')
+    ];
+    // 解析不到的項目（極少見的非標準主題 XML）就退回 Office 預設值，不要讓整組變成 undefined
+    return table.map((c, i) => c || OFFICE_THEME_COLORS[i]);
+}
+
+function fixColor(colorObj, themeColors) {
     if (!colorObj) return undefined;
-    
+
     // 如果是 ARGB 格式 (例如 { argb: 'FF0070C0' })
     if (colorObj.argb) {
         let argb = colorObj.argb.toString();
@@ -667,34 +1178,100 @@ function fixColor(colorObj) {
         }
         return '#' + argb;
     }
-    
+
     // 如果直接是 hex 屬性
     if (colorObj.hex) {
         return '#' + colorObj.hex;
     }
-    
+
+    // 主題色 (例如 { theme: 4, tint: -0.25 })：這是先前版本完全沒處理、
+    // 導致大量儲存格背景/字體顏色回存後整個消失的主要原因之一
+    if (typeof colorObj.theme === 'number') {
+        const palette = themeColors || OFFICE_THEME_COLORS;
+        const base = palette[colorObj.theme] || palette[0];
+        return '#' + applyColorTint(base, colorObj.tint);
+    }
+
     return undefined;
 };
+
+// 🖼️ 儲存格框線樣式對照表：ExcelJS 的 border.style → 對應的 CSS 線寬/線型
+const BORDER_STYLE_TO_CSS = {
+    hair: '1px solid',
+    thin: '1px solid',
+    dotted: '1px dotted',
+    dashed: '1px dashed',
+    dashDot: '1px dashed',
+    dashDotDot: '1px dashed',
+    medium: '2px solid',
+    mediumDashed: '2px dashed',
+    mediumDashDot: '2px dashed',
+    mediumDashDotDot: '2px dashed',
+    slantDashDot: '2px dashed',
+    thick: '3px solid',
+    double: '3px double'
+};
+
+// ExcelJS 的單邊框線物件 { style, color } → Syncfusion CellStyleModel 用的 CSS border 字串
+function excelBorderSideToCss(borderSide, themeColors) {
+    if (!borderSide || !borderSide.style) return undefined;
+    const css = BORDER_STYLE_TO_CSS[borderSide.style] || '1px solid';
+    const color = fixColor(borderSide.color, themeColors) || '#000000';
+    return `${css} ${color}`;
+}
+
+// 反過來：Syncfusion 存回來的 CSS border 字串 → ExcelJS 的 { style, color }
+function cssBorderToExcelBorderSide(cssBorder) {
+    const match = String(cssBorder || '').match(/^(\d+(?:\.\d+)?)px\s+(\w+)(?:\s+(#[0-9a-fA-F]{3,8}))?/);
+    if (!match) return { style: 'thin', color: { argb: 'FF000000' } };
+    const width = parseFloat(match[1]);
+    const styleWord = match[2].toLowerCase();
+    const colorHex = (match[3] || '#000000').replace('#', '').toUpperCase();
+
+    let style = 'thin';
+    if (styleWord === 'double') style = 'double';
+    else if (styleWord === 'dotted') style = 'dotted';
+    else if (styleWord === 'dashed') style = width >= 2 ? 'mediumDashed' : 'dashed';
+    else if (width >= 3) style = 'thick';
+    else if (width >= 2) style = 'medium';
+
+    return { style, color: { argb: `FF${colorHex}` } };
+}
 
 // ==========================================
 // 🔄 共用轉換器：ExcelJS 活頁簿 Buffer → Syncfusion Spreadsheet JSON
 //    (由 /api/spreadsheet/open 與 Excel 檔案池的 open 路由共用)
 // ==========================================
-async function excelBufferToSpreadsheetJson(fileBuffer) {
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(fileBuffer);
-    // getWorksheet(1) resolves by ExcelJS's internal sheet id, not tab position —
-    // for workbooks whose sheets were reordered/copied (ids no longer start at 1),
-    // that silently loads the wrong tab. Instead, match what Excel actually shows on
-    // open: the saved activeTab if it's visible, else the first visible sheet, else
-    // just the first sheet (e.g. if every sheet is hidden).
-    const activeTabIndex = workbook.views && workbook.views[0] ? workbook.views[0].activeTab : 0;
-    const activeCandidate = workbook.worksheets[activeTabIndex];
-    const worksheet = (activeCandidate && activeCandidate.state === 'visible')
-        ? activeCandidate
-        : (workbook.worksheets.find(ws => ws.state === 'visible') || workbook.worksheets[0]);
+// 🛡️ 把單一 ExcelJS 工作表轉成 Syncfusion Spreadsheet 的 sheet JSON（含樣式/合併儲存格）。
+//    不論該工作表在原檔中是否被設為隱藏，這裡都原樣輸出——是否顯示交由呼叫端決定
+//    （目前線上編輯器會把回傳的所有工作表都當成一般分頁顯示，讓使用者也看得到隱藏的工作表）。
+// 📅 ExcelJS 儲存格值（或公式的快取結果）→ Syncfusion 顯示用的值字串。
+//    日期轉回 Excel 序列值（搭配 numFmt 由 Syncfusion 依原格式顯示），richText 合併為純文字，
+//    錯誤值（#N/A 等）原樣帶出，其餘沿用 parseCellValue()。
+function excelValueToSpreadsheetValue(v) {
+    if (v instanceof Date) return String(v.getTime() / 86400000 + 25569);
+    if (v && typeof v === 'object') {
+        if (Array.isArray(v.richText)) return v.richText.map(rt => rt.text || '').join('');
+        if (v.error !== undefined) return String(v.error);
+    }
+    return parseCellValue(v);
+}
 
-    // 🛡️ 決定全域的最大欄位數基準（至少 26 欄，或依工作表實際最大欄位而定）
+// 🧮 Syncfusion 公式引擎算不出來的 Excel 公式：
+//    - _xlfn./_xlws. 前綴的新版函數（IFNA、XLOOKUP、FILTER…），Syncfusion 不認得會顯示 #NAME?
+//    - 含 [ 的結構化表格參照（T_Cpu_pc[]、Table1[@欄位]）或外部活頁簿參照（[1]Sheet!A1）
+//    - 參照隱藏工作表的公式（隱藏分頁不送到編輯器，Syncfusion 找不到該分頁）
+//    這類儲存格開檔時改顯示 Excel 上次計算的快取結果，回存時再把原公式保留下來
+//    （見 populateWorksheetFromSpreadsheetJson）。
+function isFormulaUnsupportedBySpreadsheet(formula, hiddenSheetNames) {
+    if (!formula) return false;
+    if (/_xl(fn|ws)\./i.test(formula) || formula.includes('[')) return true;
+    return (hiddenSheetNames || []).some(name =>
+        formula.includes(`'${name.replace(/'/g, "''")}'!`) || formula.includes(`${name}!`));
+}
+
+function buildSpreadsheetSheetJson(worksheet, themeColors, hiddenSheetNames) {
+    // 🛡️ 決定該工作表的最大欄位數基準（至少 26 欄，或依實際最大欄位而定）
     const maxColCount = Math.max(worksheet.columnCount || 0, 26);
 
     let formattedRows = [];
@@ -708,32 +1285,60 @@ async function excelBufferToSpreadsheetJson(fileBuffer) {
                 formula: cell.formula ? `=${cell.formula}` : undefined,
                 style: {}
             };
+            const formulaUnsupported = isFormulaUnsupportedBySpreadsheet(cell.formula, hiddenSheetNames);
+            if (formulaUnsupported) cellObj.formula = undefined;
 
-            // 🎨 安全處理：將 richText 陣列合併為純文字字串，避免格式崩潰或出現 [object Object]
+            // 🎨 安全處理：將 richText 陣列合併為純文字字串，避免格式崩潰或出現 [object Object]。
+            //    Syncfusion 儲存格模型每格只能有一組樣式，沒辦法保留同一格內「每個字元各自的顏色」，
+            //    所以順便挑出字數最多的那個 run 的字型/顏色，當作整格的代表樣式——
+            //    這樣至少整格會套用一個「有意義」的顏色，而不是（cell.font 對 richText 儲存格
+            //    通常只是預設樣式）整格顏色直接消失變黑色。
+            let dominantFont = null;
             if (cell.value && typeof cell.value === 'object' && Array.isArray(cell.value.richText)) {
-                cellObj.value = cell.value.richText.map(rt => rt.text || '').join('');
+                const runs = cell.value.richText;
+                cellObj.value = runs.map(rt => rt.text || '').join('');
+                let longest = null;
+                runs.forEach(rt => {
+                    const len = (rt.text || '').length;
+                    if (rt.font && (!longest || len > longest.len)) longest = { font: rt.font, len };
+                });
+                dominantFont = longest ? longest.font : null;
+            } else if (formulaUnsupported) {
+                // Syncfusion 算不出來的公式：顯示 Excel 存檔時的快取結果，而不是 #NAME?
+                cellObj.value = excelValueToSpreadsheetValue(cell.result);
+            } else if (cell.value instanceof Date) {
+                // 📅 日期儲存格：ExcelJS 會回傳 JS Date，parseCellValue() 會把它當成一般物件而變成空字串
+                //    （開檔後日期格整格空白）。改成轉回 Excel 序列值，搭配下方帶出的 numFmt，
+                //    Syncfusion 就會依原檔格式顯示日期，回存時也會以數字 + 日期格式寫回。
+                cellObj.value = excelValueToSpreadsheetValue(cell.value);
             } else {
                 cellObj.value = parseCellValue(cell.value);
             }
 
-            if (cell.font) {
-                if (cell.font.bold) cellObj.style.fontWeight = 'bold';
-                if (cell.font.italic) cellObj.style.fontStyle = 'italic';
-                if (cell.font.size) cellObj.style.fontSize = `${cell.font.size}pt`;
-                const fColor = fixColor(cell.font.color);
+            const effectiveFont = dominantFont || cell.font;
+            if (effectiveFont) {
+                if (effectiveFont.bold) cellObj.style.fontWeight = 'bold';
+                if (effectiveFont.italic) cellObj.style.fontStyle = 'italic';
+                if (effectiveFont.size) cellObj.style.fontSize = `${effectiveFont.size}pt`;
+                if (effectiveFont.name) cellObj.style.fontFamily = effectiveFont.name;
+                const fColor = fixColor(effectiveFont.color, themeColors);
                 if (fColor) cellObj.style.color = fColor;
             }
 
             if (cell.fill && cell.fill.fgColor) {
-                const bColor = fixColor(cell.fill.fgColor);
+                const bColor = fixColor(cell.fill.fgColor, themeColors);
                 if (bColor) cellObj.style.backgroundColor = bColor;
             }
 
             if (cell.border) {
-                if (cell.border.top) cellObj.style.borderTop = "1px solid #000000";
-                if (cell.border.bottom) cellObj.style.borderBottom = "1px solid #000000";
-                if (cell.border.left) cellObj.style.borderLeft = "1px solid #000000";
-                if (cell.border.right) cellObj.style.borderRight = "1px solid #000000";
+                const topCss = excelBorderSideToCss(cell.border.top, themeColors);
+                if (topCss) cellObj.style.borderTop = topCss;
+                const bottomCss = excelBorderSideToCss(cell.border.bottom, themeColors);
+                if (bottomCss) cellObj.style.borderBottom = bottomCss;
+                const leftCss = excelBorderSideToCss(cell.border.left, themeColors);
+                if (leftCss) cellObj.style.borderLeft = leftCss;
+                const rightCss = excelBorderSideToCss(cell.border.right, themeColors);
+                if (rightCss) cellObj.style.borderRight = rightCss;
             }
 
             if (cell.alignment) {
@@ -742,6 +1347,12 @@ async function excelBufferToSpreadsheetJson(fileBuffer) {
                     cellObj.style.verticalAlign = cell.alignment.vertical === 'middle' ? 'middle' : cell.alignment.vertical;
                 }
                 if (cell.alignment.wrapText) cellObj.style.wrap = true;
+            }
+
+            // 🔢 數字格式（貨幣/百分比/日期等）：先前完全沒有回傳，導致格式化後的數字
+            // 回存/重新載入後全部變成純數字，這裡把 ExcelJS 的 numFmt 原樣帶出去
+            if (cell.numFmt && cell.numFmt !== 'General') {
+                cellObj.format = cell.numFmt;
             }
 
             cells[c - 1] = cellObj;
@@ -773,11 +1384,9 @@ async function excelBufferToSpreadsheetJson(fileBuffer) {
                             const targetCell = formattedRows[r - 1].cells[c - 1];
                             if (!targetCell.style) targetCell.style = {};
 
-                            // 針對合併區塊的邊界補上框線，確保四周與格線完整
-                            if (r === top) targetCell.style.borderTop = "1px solid #000000";
-                            if (r === bottom) targetCell.style.borderBottom = "1px solid #000000";
-                            if (c === left) targetCell.style.borderLeft = "1px solid #000000";
-                            if (c === right) targetCell.style.borderRight = "1px solid #000000";
+                            // 🌟 這裡原本會不論原檔有無框線，一律把合併區塊四周強制蓋成黑色實線，
+                            //    導致合併儲存格回存後全部多出原本沒有的框線。框線已經在上面
+                            //    依 cell.border 逐格讀取過了，這裡不再額外覆蓋/補框，保持與原檔一致。
 
                             // 除了左上角主格保留內容外，其餘被合併涵蓋的格子清空值
                             if (r !== top || c !== left) {
@@ -791,12 +1400,41 @@ async function excelBufferToSpreadsheetJson(fileBuffer) {
         });
     }
 
+    return { name: worksheet.name, rows: formattedRows, columns: columns };
+}
 
-    const result = { Workbook: { sheets: [{ name: worksheet.name, rows: formattedRows, columns: columns }] } };
+async function excelBufferToSpreadsheetJson(fileBuffer) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(fileBuffer);
+
+    // 🎨 先解析這份檔案「自己的」佈景主題色盤，而不是整份都套用 Office 預設色，
+    //    否則自訂過主題色的活頁簿，主題色儲存格開檔後顏色會整個跑掉（跟原檔肉眼看起來不一樣）
+    const themeColors = parseWorkbookThemeColors(workbook);
+
+    // 🌟 只轉換「原檔本來就看得到」的工作表，隱藏/極度隱藏的工作表不轉換也不送到前端。
+    //    先前這裡是不論隱藏與否，全部工作表都轉成 JSON 送到編輯器，讓使用者也能看到原本被
+    //    隱藏的工作表——立意良好，但遇到隱藏分頁裡也塞了大量資料的活頁簿時，等於平白多花
+    //    好幾倍的轉換/傳輸/瀏覽器端渲染成本去處理使用者根本看不到、也不會去點的分頁，
+    //    是「開檔要等好幾分鐘」的主要原因之一。改回只轉換可見分頁，跟 Excel 本身的行為一致。
+    const visibleWorksheets = workbook.worksheets.filter(ws => ws.state === 'visible');
+    const hiddenSheetNames = workbook.worksheets.filter(ws => ws.state !== 'visible').map(ws => ws.name);
+    const sheets = visibleWorksheets.map(ws => buildSpreadsheetSheetJson(ws, themeColors, hiddenSheetNames));
+
+    // activeSheetIndex：盡量開在 Excel 原本打開時所在的分頁，體感上與原檔一致
+    // 注意 activeTab 是相對「全部工作表」的索引，隱藏分頁不可能是作用中分頁，
+    // 但索引本身仍要換算成「只算可見分頁」的位置，不能直接拿來當 sheets 陣列的索引用
+    const activeTabIndex = workbook.views && workbook.views[0] ? workbook.views[0].activeTab : 0;
+    const activeWorksheet = workbook.worksheets[activeTabIndex];
+    const mappedActiveIndex = activeWorksheet ? visibleWorksheets.indexOf(activeWorksheet) : -1;
+    const activeSheetIndex = mappedActiveIndex >= 0 ? mappedActiveIndex : 0;
+
+    const result = { Workbook: { sheets, activeSheetIndex } };
     return {
         result,
-        sheetCount: workbook.worksheets.length,
-        sheetNames: workbook.worksheets.map(ws => ws.name)
+        // 🌟 這裡回報的是「實際送去給編輯器的可見分頁」數量/名稱，不是原檔全部工作表，
+        // 這樣前端顯示的分頁數才會跟編輯器裡實際看到的分頁數一致
+        sheetCount: visibleWorksheets.length,
+        sheetNames: visibleWorksheets.map(ws => ws.name)
     };
 }
 
@@ -936,36 +1574,28 @@ app.post('/api/spreadsheet/openXX', uploadMemory.single('file'), async (req, res
 // ==========================================
 // 2. SAVE 匯出 Excel 路由
 // ==========================================
-app.post('/api/spreadsheet/saveX2', uploadMemory.any(), (req, res) => {
+app.post('/api/spreadsheet/saveX2', uploadMemory.any(), async (req, res) => {
     try {
         const rawData = req.body.JSONData;
         if (!rawData) return res.status(400).send("No data received");
 
         const fullModel = JSON.parse(rawData);
-        const sheet = fullModel.sheets[0];
-        if (!sheet || !sheet.rows) return res.status(400).send("No valid sheet found");
+        if (!fullModel || !fullModel.sheets || fullModel.sheets.length === 0) {
+            return res.status(400).send("No valid sheet found");
+        }
 
-        const maxCols = sheet.rows.reduce((max, row) => (row && row.cells) ? Math.max(max, row.cells.length) : max, 0);
-
-        const rowsData = sheet.rows.map((row) => {
-            const rowArray = [];
-            if (!row || !row.cells) return new Array(maxCols).fill("");
-            for (let i = 0; i < maxCols; i++) {
-                const cell = row.cells[i];
-                rowArray.push(cell ? (cell.value !== undefined ? cell.value : (cell.text || "")) : "");
-            }
-            return rowArray;
-        });
-
-        const worksheet = XLSX.utils.aoa_to_sheet(rowsData);
-        const workbook = XLSX.utils.book_new();
-        XUtils = XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
-
-        const buf = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+        // 🌟 這裡原本是用 xlsx(SheetJS) 的 aoa_to_sheet 只把「值」寫成新檔，
+        //    字型/背景色/框線/對齊/數字格式/合併儲存格全部都會遺失，
+        //    導致從功能區「儲存/下載」匯出的檔案格式整個消失（跟上傳/開檔用的
+        //    exceljs 版轉換邏輯完全不一致）。改用與 excel-pool 回存共用的
+        //    spreadsheetJsonToWorkbook，讓下載跟開檔走同一套保留樣式的轉換。
+        const workbook = spreadsheetJsonToWorkbook(fullModel);
+        const buf = await workbook.xlsx.writeBuffer();
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', 'attachment; filename=AAA.xlsx');
-        res.send(buf);
+        res.setHeader('Content-Disposition', 'attachment; filename=spreadsheet.xlsx');
+        res.send(Buffer.from(buf));
     } catch (error) {
+        console.error('❌ saveX2 匯出失敗:', error.message);
         res.status(500).send("Server Error");
     }
 });
@@ -1228,98 +1858,86 @@ app.post('/api/spreadsheet/save-excel-to-dbX', async (req, res) => {
 // ==========================================
 // 4. Modal 自訂規格建表 API
 // ==========================================
-app.post('/api/spreadsheet/check-table', async (req, res) => {
-    const { targetTable, fields, host, user, password } = req.body;
+app.post('/api/spreadsheet/check-table', (req, res) => {
+    const { targetTable, fields, dbFile } = req.body;
 
     if (!targetTable || !targetTable.trim()) {
         return res.status(400).json({ success: false, message: '請先輸入目標資料庫 Table Name' });
     }
 
-    let schemaName = 'dbo';
-    let tableName = targetTable.trim();
+    const tableName = targetTable.trim();
+    if (!isValidIdentifier(tableName)) {
+        return res.status(400).json({ success: false, message: `無效的 Table Name：${tableName}（僅允許英數字與底線）` });
+    }
 
-    if (tableName.includes('.')) {
-        const parts = tableName.split('.');
-        schemaName = parts[0];
-        tableName = parts[1];
+    const dbPath = resolveSqliteDbPath(dbFile, req.user.email);
+    if (!dbPath) {
+        return res.status(400).json({ success: false, message: '請先建立或選擇本機 SQLite 資料庫檔案' });
     }
 
     try {
-        const activePool = await getPool({ host, user, password });
+        const db = getSqliteDb(dbFile, req.user.email);
 
-        const checkRequest = new sql.Request(activePool);
-        checkRequest.input('schemaName', sql.NVarChar(128), schemaName);
-        checkRequest.input('tableName', sql.NVarChar(128), tableName);
-        
-        const checkResult = await checkRequest.query(`
-            SELECT COUNT(*) AS TABLE_COUNT 
-            FROM INFORMATION_SCHEMA.TABLES 
-            WHERE TABLE_SCHEMA = @schemaName AND TABLE_NAME = @tableName
-        `);
-        
-        const tableExists = checkResult.recordset[0].TABLE_COUNT > 0;
+        const existsRow = db.prepare(`SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?`).get(tableName);
+        const tableExists = existsRow.cnt > 0;
 
         if (tableExists) {
-            return res.json({ 
-                success: true, 
-                exists: true, 
-                message: `資料表 [${schemaName}].[${tableName}] 已經存在於目標系統中。` 
+            return res.json({
+                success: true,
+                exists: true,
+                message: `資料表 [${tableName}] 已經存在於 ${path.basename(dbPath)} 中。`
             });
         }
 
         if (!fields || !Array.isArray(fields) || fields.length === 0) {
-            return res.json({ 
-                success: true, 
-                exists: false, 
-                message: `資料表 [${schemaName}].[${tableName}] 目前不存在。` 
+            return res.json({
+                success: true,
+                exists: false,
+                message: `資料表 [${tableName}] 目前不存在。`
             });
         }
 
         const uniqueFields = [];
         const seen = new Set();
         for (const f of fields) {
-            if (f.name && !seen.has(f.name.toLowerCase())) {
+            if (f.name && isValidIdentifier(f.name) && !seen.has(f.name.toLowerCase())) {
                 seen.add(f.name.toLowerCase());
                 uniqueFields.push(f);
             }
         }
 
+        if (uniqueFields.length === 0) {
+            return res.status(400).json({ success: false, message: '請至少提供一個有效的資料行名稱（僅允許英數字與底線）' });
+        }
+
+        const SQLITE_TYPE_MAP = { varchar: 'TEXT', nvarchar: 'TEXT', int: 'INTEGER', decimal: 'REAL', datetime: 'TEXT', float: 'REAL' };
         const columnDefinitions = uniqueFields.map(f => {
-            const colName = f.name.replace(/[\[\]]/g, ''); 
-            let typeStr = f.type;
-
-            if ((f.type === 'varchar' || f.type === 'nvarchar') && f.length) {
-                typeStr = `${f.type}(${f.length})`;
-            } else if (f.type === 'decimal') {
-                typeStr = 'DECIMAL(18, 4)'; 
-            }
-
-            const nullStr = f.allowNull ? 'NULL' : 'NOT NULL';
-            return `[${colName}] ${typeStr} ${nullStr}`;
+            const typeStr = SQLITE_TYPE_MAP[f.type] || 'TEXT';
+            const nullStr = f.allowNull ? '' : ' NOT NULL';
+            return `"${f.name}" ${typeStr}${nullStr}`;
         });
 
         const createSql = `
-            CREATE TABLE [${schemaName}].[${tableName}] (
-                [id] INT IDENTITY(1,1) PRIMARY KEY,
+            CREATE TABLE "${tableName}" (
+                "id" INTEGER PRIMARY KEY AUTOINCREMENT,
                 ${columnDefinitions.join(',\n                ')},
-                [created_at] DATETIME DEFAULT GETDATE()
+                "created_at" TEXT DEFAULT CURRENT_TIMESTAMP
             )
         `;
-        
-        console.log(`🔨 執行動態客製化建表陳述句:\n${createSql}`);
-        const createRequest = new sql.Request(activePool);
-        await createRequest.query(createSql);
 
-        return res.status(201).json({ 
-            success: true, 
-            exists: true, 
-            created: true, 
-            message: `資料表 [${schemaName}].[${tableName}] 已成功建立！` 
+        console.log(`🔨 執行動態客製化建表陳述句 (SQLite: ${path.basename(dbPath)}):\n${createSql}`);
+        db.exec(createSql);
+
+        return res.status(201).json({
+            success: true,
+            exists: true,
+            created: true,
+            message: `資料表 [${tableName}] 已成功建立於 ${path.basename(dbPath)}！`
         });
 
     } catch (err) {
         console.error('❌ 動態建表任務攔截失敗:', err.message);
-        res.status(500).json({ success: false, error: err.message, message: '操作 MSSQL 執行核心指令時失敗' });
+        res.status(500).json({ success: false, error: err.message, message: '操作本機 SQLite 執行核心指令時失敗' });
     }
 });
 
@@ -1374,22 +1992,217 @@ app.get('/api/spreadsheet/get-table-columns', async (req, res) => {
 
 
 // ==========================================
-// 💾 MongoDB 設定檔快取（模擬區塊）
+// 💾 XLSX Template Setup 範本設定 — 存於 MongoDB（excel_import_system.templates）
 // ==========================================
-app.post('/api/spreadsheet/save-template', (req, res) => {
-    console.log("💾 後端已收到包含步驟 5 JavaScript 巨集的 Mapping 設計檔：", req.body);
-    return res.json({ success: true, message: "同步配置成功！" });
+const templateSchema = new mongoose.Schema({
+    templateCode: { type: String, required: true, unique: true },
+    templateName: String,
+    description: String,
+    targetTable: String,
+    dataStartRow: Number,
+    sheetMode: String,
+    sheetValue: mongoose.Schema.Types.Mixed,
+    filename: String,
+    dbFile: String,
+    rowHeaders: [{
+        excelColumn: String,
+        dbFieldName: String,
+        isGrouped: Boolean,
+        filterType: String,
+        filterExpression: String,
+    }],
+    timeline: {
+        startColumn: String,
+        endColumn: String,
+        yearRow: Number,
+        dbYearField: String,
+        itemRow: Number,
+        dbItemField: String,
+        dbValueField: String,
+        skipSpace: Number,
+    },
+    skipHeaders: [String],
+    macroScript: String,
+}, { timestamps: true });
+const Template = mongoose.connection.useDb('excel_import_system').model('Template', templateSchema, 'templates');
+
+app.post('/api/spreadsheet/save-template', async (req, res) => {
+    const templateCode = (req.body.templateCode || '').trim();
+    if (!templateCode) {
+        return res.status(400).json({ success: false, message: '缺少範本識別碼 (templateCode)' });
+    }
+    try {
+        await Template.findOneAndUpdate(
+            { templateCode },
+            { $set: { ...req.body, templateCode } },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        res.json({ success: true, message: "同步配置成功！" });
+    } catch (err) {
+        console.error('❌ 儲存範本設定失敗:', err.message);
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 
 // ==========================================
 // ⚡ 🌟 重要整合：執行實體 Excel 動態轉置匯入（整合步驟 5 巨集引擎）
 // ==========================================
+// 🌟 共用核心：把一份已經讀好的 worksheet，依範本的 rowHeaders/timeline 規格
+// 橫向拆解（unpivot）成一筆筆明細記錄，跑過可選的巨集沙盒，最後整批寫入指定的
+// SQLite 資料表（單一交易，失敗整批回滾）。/api/spreadsheet/execute-import（來源
+// 是先前上傳到伺服器磁碟的 .xlsx 檔）與 /api/spreadsheet/save-excel-to-sqlite-by-template
+// （來源是前端試算表元件目前畫面內容的 JSON）共用這套邏輯，差別只在 worksheet 怎麼來。
+function runUnpivotImport({ db, targetTable, worksheet, dataStartRow, rowHeaders, timeline, skipHeaders, macroScript, dbPath }) {
+    const startColIdx = letterToColumnIndex(timeline.startColumn);
+    const endColIdx = letterToColumnIndex(timeline.endColumn);
+
+    // 1. 橫向解析時間標頭矩陣
+    const timelineHeaders = {};
+    for (let col = startColIdx; col <= endColIdx; col++) {
+        const yearVal = parseCellValue(worksheet.getRow(timeline.yearRow).getCell(col).value);
+        const itemVal = parseCellValue(worksheet.getRow(timeline.itemRow).getCell(col).value);
+
+        if ((skipHeaders || []).includes(itemVal) || (skipHeaders || []).includes(yearVal)) {
+            continue;
+        }
+        if (!itemVal && !yearVal) continue;
+
+        timelineHeaders[col] = { year: yearVal, item: itemVal };
+    }
+
+    // 2. 縱向每列遍歷解析 + Grouped 遇空向下沿用快取
+    const groupedCache = {};
+    let recordsToInsert = []; // 🌟 改用 let，允許巨集整體過濾或重構
+    const totalRows = worksheet.rowCount;
+    const startRow = Number(dataStartRow) || 1;
+
+    for (let r = startRow; r <= totalRows; r++) {
+        const row = worksheet.getRow(r);
+        const fixedFields = {};
+        let isRowValid = true;
+
+        for (const header of rowHeaders) {
+            const colIdx = letterToColumnIndex(header.excelColumn);
+            let cellValue = parseCellValue(row.getCell(colIdx).value);
+
+            if (header.isGrouped) {
+                if (cellValue !== '') {
+                    groupedCache[header.dbFieldName] = cellValue;
+                } else {
+                    cellValue = groupedCache[header.dbFieldName] || '';
+                }
+            }
+
+            if (header.filterType === 'not_empty' && !cellValue) {
+                isRowValid = false;
+                break;
+            }
+            fixedFields[header.dbFieldName] = cellValue;
+        }
+
+        if (!isRowValid) continue;
+
+        for (let col = startColIdx; col <= endColIdx; col++) {
+            if (timelineHeaders[col]) {
+                const rawNumVal = row.getCell(col).value;
+                let numValue = null;
+                if (rawNumVal !== undefined && rawNumVal !== null && rawNumVal !== '') {
+                    const cleanNum = typeof rawNumVal === 'object' ? (rawNumVal.result !== undefined ? rawNumVal.result : rawNumVal.text) : rawNumVal;
+                    numValue = parseFloat(String(cleanNum).replace(/,/g, '')) || 0;
+                }
+
+                recordsToInsert.push({
+                    ...fixedFields,
+                    [timeline.dbYearField]: timelineHeaders[col].year,
+                    [timeline.dbItemField]: timelineHeaders[col].item,
+                    [timeline.dbValueField]: numValue
+                });
+            }
+        }
+    }
+
+    // ========================================================
+    // 🌟 核心新增：VBA Alternative 巨集處理安全沙盒引擎
+    // ========================================================
+    if (macroScript && macroScript.trim()) {
+        console.log("⚡ 偵測到內嵌自訂 JavaScript 巨集，準備進入沙盒解譯執行...");
+        try {
+            // 建構沙盒環境上下文，注入解構後的 rows 變數與 console 控制
+            const sandbox = {
+                rows: recordsToInsert, // 前端巨集寫 rows.forEach 的操作對象
+                console: {
+                    log: (...args) => console.log("[🔮 沙盒日誌]:", ...args),
+                    error: (...args) => console.error("[🔮 沙盒錯誤]:", ...args)
+                }
+            };
+
+            // 建立安全的 Context
+            vm.createContext(sandbox);
+
+            // 設定 2 秒逾時防呆，防使用者不小心寫出無窮迴圈 (e.g. while(true))
+            const script = new vm.Script(macroScript);
+            script.runInContext(sandbox, { timeout: 2000 });
+
+            // 將沙盒執行完畢後變更的數據重新指派回待寫入陣列
+            recordsToInsert = sandbox.rows;
+            console.log("🟢 巨集沙盒處理完畢，數據清洗校正成功。");
+        } catch (macroErr) {
+            console.error("❌ 巨集腳本執行期間發生崩潰，阻擋寫入交易:", macroErr.message);
+            const wrapped = new Error(`巨集指令執行錯誤，已攔截阻擋寫入。錯誤詳情: ${macroErr.message}`);
+            wrapped.isMacroError = true;
+            throw wrapped;
+        }
+    }
+
+    // 3. 寫入本機 SQLite 資料庫檔案（單一交易，失敗整批回滾）
+    if (recordsToInsert.length === 0) {
+        return { insertedCount: 0, message: '解析完成（或被巨集過濾空），未發現合規數據列。' };
+    }
+
+    const stmtCache = new Map();
+    function getInsertStmt(fieldNames) {
+        const cacheKey = fieldNames.join(',');
+        if (stmtCache.has(cacheKey)) return stmtCache.get(cacheKey);
+        const columns = fieldNames.map(f => `"${f}"`).join(', ');
+        const placeholders = fieldNames.map(() => '?').join(', ');
+        const stmt = db.prepare(`INSERT INTO "${targetTable}" (${columns}) VALUES (${placeholders})`);
+        stmtCache.set(cacheKey, stmt);
+        return stmt;
+    }
+
+    db.exec('BEGIN');
+    try {
+        for (const record of recordsToInsert) {
+            const fieldNames = Object.keys(record).filter(isValidIdentifier);
+            const stmt = getInsertStmt(fieldNames);
+            const values = fieldNames.map(fieldName => {
+                const value = record[fieldName];
+                if (fieldName === timeline.dbValueField) {
+                    return value === null || value === undefined ? null : Number(value);
+                }
+                return value === null || value === undefined || value === '' ? null : String(value);
+            });
+            stmt.run(...values);
+        }
+        db.exec('COMMIT');
+
+        return {
+            insertedCount: recordsToInsert.length,
+            message: `成功解構並對應範本欄位，已將 ${recordsToInsert.length} 筆明細數據寫入本機 SQLite 資料庫${dbPath ? ` [${path.basename(dbPath)}]` : ''}的資料表 [${targetTable}]。`
+        };
+
+    } catch (dbErr) {
+        db.exec('ROLLBACK');
+        throw dbErr;
+    }
+}
+
 app.post('/api/spreadsheet/execute-import', async (req, res) => {
     const config = req.body;
-    const { 
-        uploadedFilePath, targetTable, dataStartRow, sheetMode, sheetValue, 
-        rowHeaders, timeline, skipHeaders, dbConfig,
+    const {
+        uploadedFilePath, targetTable, dataStartRow, sheetMode, sheetValue,
+        rowHeaders, timeline, skipHeaders, dbFile,
         macroScript // 🌟 新增：由前端傳入的自訂 JavaScript 巨集代碼字串
     } = config;
 
@@ -1397,293 +2210,309 @@ app.post('/api/spreadsheet/execute-import', async (req, res) => {
         return res.status(400).json({ success: false, message: '伺服器找不到先前上傳的 Excel 檔案實體，請重新上傳。' });
     }
 
+    if (!isValidIdentifier(targetTable)) {
+        return res.status(400).json({ success: false, message: `無效的目標資料表名稱：${targetTable}` });
+    }
+
+    const dbPath = resolveSqliteDbPath(dbFile, req.user.email);
+    if (!dbPath || !fs.existsSync(dbPath)) {
+        return res.status(400).json({ success: false, message: '找不到已綁定的本機 SQLite 資料庫檔案，請先於步驟中建立/選擇資料庫檔案。' });
+    }
+
     try {
-        // 1. 動態建立資料庫連線池
-        const activePool = await getPool({
-            host: dbConfig?.host,
-            user: dbConfig?.user,
-            password: dbConfig?.password
-        });
+        // 1. 取得綁定的本機 SQLite 資料庫連線（沿用連線池）
+        const db = getSqliteDb(dbFile, req.user.email);
 
         // 2. 利用 exceljs 讀取指定的 Excel 檔案
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.readFile(uploadedFilePath);
-        
-        const worksheet = sheetMode === 'index' 
-            ? workbook.worksheets[Number(sheetValue) - 1] 
+
+        const worksheet = sheetMode === 'index'
+            ? workbook.worksheets[Number(sheetValue) - 1]
             : workbook.getWorksheet(sheetValue);
 
         if (!worksheet) {
             return res.status(400).json({ success: false, message: `找不到指定的 Sheet 工作表: ${sheetValue}` });
         }
 
-        const startColIdx = letterToColumnIndex(timeline.startColumn);
-        const endColIdx = letterToColumnIndex(timeline.endColumn);
-
-        // 3. 橫向解析時間標頭矩陣
-        const timelineHeaders = {}; 
-        for (let col = startColIdx; col <= endColIdx; col++) {
-            const yearVal = parseCellValue(worksheet.getRow(timeline.yearRow).getCell(col).value);
-            const itemVal = parseCellValue(worksheet.getRow(timeline.itemRow).getCell(col).value);
-
-            if ((skipHeaders || []).includes(itemVal) || (skipHeaders || []).includes(yearVal)) {
-                continue;
-            }
-            if (!itemVal && !yearVal) continue;
-
-            timelineHeaders[col] = { year: yearVal, item: itemVal };
-        }
-
-        // 4. 縱向每列遍歷解析 + Grouped 遇空向下沿用快取
-        const groupedCache = {};
-        let recordsToInsert = []; // 🌟 改用 let，允許巨集整體過濾或重構
-        const totalRows = worksheet.rowCount;
-        const startRow = Number(dataStartRow) || 1;
-
-        for (let r = startRow; r <= totalRows; r++) {
-            const row = worksheet.getRow(r);
-            const fixedFields = {};
-            let isRowValid = true;
-
-            for (const header of rowHeaders) {
-                const colIdx = letterToColumnIndex(header.excelColumn);
-                let cellValue = parseCellValue(row.getCell(colIdx).value);
-
-                if (header.isGrouped) {
-                    if (cellValue !== '') {
-                        groupedCache[header.dbFieldName] = cellValue;
-                    } else {
-                        cellValue = groupedCache[header.dbFieldName] || '';
-                    }
-                }
-
-                if (header.filterType === 'not_empty' && !cellValue) {
-                    isRowValid = false;
-                    break;
-                }
-                fixedFields[header.dbFieldName] = cellValue;
-            }
-
-            if (!isRowValid) continue; 
-
-            for (let col = startColIdx; col <= endColIdx; col++) {
-                if (timelineHeaders[col]) {
-                    const rawNumVal = row.getCell(col).value;
-                    let numValue = null;
-                    if (rawNumVal !== undefined && rawNumVal !== null && rawNumVal !== '') {
-                        const cleanNum = typeof rawNumVal === 'object' ? (rawNumVal.result !== undefined ? rawNumVal.result : rawNumVal.text) : rawNumVal;
-                        numValue = parseFloat(String(cleanNum).replace(/,/g, '')) || 0;
-                    }
-
-                    recordsToInsert.push({
-                        ...fixedFields,
-                        [timeline.dbYearField]: timelineHeaders[col].year,
-                        [timeline.dbItemField]: timelineHeaders[col].item,
-                        [timeline.dbValueField]: numValue
-                    });
-                }
-            }
-        }
-
-        // ========================================================
-        // 🌟 核心新增：步驟 5 VBA Alternative 巨集處理安全沙盒引擎
-        // ========================================================
-        if (macroScript && macroScript.trim()) {
-            console.log("⚡ 偵測到內嵌自訂 JavaScript 巨集，準備進入沙盒解譯執行...");
-            try {
-                // 建構沙盒環境上下文，注入解構後的 rows 變數與 console 控制
-                const sandbox = {
-                    rows: recordsToInsert, // 前端巨集寫 rows.forEach 的操作對象
-                    console: {
-                        log: (...args) => console.log("[🔮 沙盒日誌]:", ...args),
-                        error: (...args) => console.error("[🔮 沙盒錯誤]:", ...args)
-                    }
-                };
-                
-                // 建立安全的 Context
-                vm.createContext(sandbox);
-                
-                // 設定 2 秒逾時防呆，防使用者不小心寫出無窮迴圈 (e.g. while(true))
-                const script = new vm.Script(macroScript);
-                script.runInContext(sandbox, { timeout: 2000 });
-                
-                // 將沙盒執行完畢後變更的數據重新指派回待寫入陣列
-                recordsToInsert = sandbox.rows;
-                console.log("🟢 巨集沙盒處理完畢，數據清洗校正成功。");
-            } catch (macroErr) {
-                console.error("❌ 巨集腳本執行期間發生崩潰，阻擋寫入交易:", macroErr.message);
-                return res.status(400).json({ 
-                    success: false, 
-                    message: `巨集指令執行錯誤，已攔截阻擋寫入。錯誤詳情: ${macroErr.message}` 
-                });
-            }
-        }
-
-        // 5. 使用 MSSQL 進行大量寫入事務 (Transaction Bulk Insert)
-        if (recordsToInsert.length === 0) {
-            return res.json({ success: true, insertedCount: 0, message: '解析完成（或被巨集過濾空），未發現合規數據列。' });
-        }
-
-        const transaction = new sql.Transaction(activePool);
-        await transaction.begin();
-
-        try {
-            for (const record of recordsToInsert) {
-                const reqInsert = new sql.Request(transaction);
-                
-                let insertColumns = [];
-                let insertValues = [];
-                
-                Object.keys(record).forEach((fieldName, idx) => {
-                    const paramName = `param_${idx}`;
-                    insertColumns.push(`[${fieldName}]`);
-                    insertValues.push(`@${paramName}`);
-                    
-                    if (fieldName === timeline.dbValueField) {
-                        reqInsert.input(paramName, sql.Decimal(18, 4), record[fieldName]);
-                    } else {
-                        reqInsert.input(paramName, sql.NVarChar(sql.MAX), record[fieldName] ? String(record[fieldName]) : null);
-                    }
-                });
-
-                const queryStr = `
-                    INSERT INTO ${targetTable} (${insertColumns.join(', ')})
-                    VALUES (${insertValues.join(', ')})
-                `;
-                await reqInsert.query(queryStr);
-            }
-            await transaction.commit();
-
-            return res.json({
-                success: true,
-                insertedCount: recordsToInsert.length,
-                message: `成功讀取 Excel 進行矩陣解構與巨集清洗，已將 ${recordsToInsert.length} 筆明細數據寫入資料表 [${targetTable}]。`
-            });
-
-        } catch (dbErr) {
-            await transaction.rollback();
-            throw dbErr;
-        }
+        const result = runUnpivotImport({ db, targetTable, worksheet, dataStartRow, rowHeaders, timeline, skipHeaders, macroScript, dbPath });
+        return res.json({ success: true, ...result });
 
     } catch (err) {
         console.error('❌ 執行試算表解析匯入發生核心崩潰:', err);
-        return res.status(500).json({ success: false, error: err.message, message: '解析或寫入目標 MSSQL 資料庫時失敗' });
+        const status = err.isMacroError ? 400 : 500;
+        return res.status(status).json({ success: false, error: err.message, message: err.isMacroError ? err.message : '解析或寫入本機 SQLite 資料庫時失敗' });
+    }
+});
+
+// ==========================================
+// 🌟 依範本規格，把「前端試算表元件目前畫面的 JSON 內容」直接解構寫入該範本綁定的
+// 本機 SQLite 資料庫 —— 這是 likeexcel.tsx「Save DB」按鈕實際呼叫的路由，取代舊的
+// save-excel-to-mssql-by-template（該路由從未存在於本檔案，只存在於已淘汰的
+// src/pages/index.js，呼叫它一定會落到這裡的 404 catch-all，回傳 HTML 而不是 JSON）。
+// 與 execute-import 的差異只在來源：這裡不需要先把檔案上傳到伺服器磁碟，而是直接用
+// spreadsheetJsonToWorkbook() 把 saveAsJson() 的結果轉成 ExcelJS 活頁簿再解析。
+// ==========================================
+app.post('/api/spreadsheet/save-excel-to-sqlite-by-template', async (req, res) => {
+    const { spreadsheetData, templateCode } = req.body;
+
+    if (!spreadsheetData || !Array.isArray(spreadsheetData.sheets)) {
+        return res.status(400).json({ success: false, message: '無效的試算表資料結構' });
+    }
+    if (!templateCode) {
+        return res.status(400).json({ success: false, message: '缺少範本識別碼 (templateCode)' });
+    }
+
+    const template = await Template.findOne({ templateCode: String(templateCode).trim() }).lean();
+    if (!template) {
+        return res.status(404).json({ success: false, message: `找不到範本 [${templateCode}]，請確認是否已於 Setup 頁面建立並儲存` });
+    }
+
+    const { targetTable, dataStartRow, sheetMode, sheetValue, rowHeaders, timeline, skipHeaders, dbFile, macroScript } = template;
+
+    if (!isValidIdentifier(targetTable)) {
+        return res.status(400).json({ success: false, message: `範本 [${templateCode}] 的目標資料表名稱無效：${targetTable}` });
+    }
+
+    const dbPath = resolveSqliteDbPath(dbFile, req.user.email);
+    if (!dbPath || !fs.existsSync(dbPath)) {
+        return res.status(400).json({ success: false, message: `找不到範本 [${templateCode}] 綁定的本機 SQLite 資料庫檔案，請先於 Setup 頁面重新綁定。` });
+    }
+
+    try {
+        const db = getSqliteDb(dbFile, req.user.email);
+        const workbook = spreadsheetJsonToWorkbook(spreadsheetData);
+
+        const worksheet = sheetMode === 'index'
+            ? workbook.worksheets[Number(sheetValue) - 1]
+            : (workbook.getWorksheet(sheetValue) || workbook.worksheets[0]);
+
+        if (!worksheet) {
+            return res.status(400).json({ success: false, message: `找不到指定的 Sheet 工作表: ${sheetValue}` });
+        }
+
+        const result = runUnpivotImport({ db, targetTable, worksheet, dataStartRow, rowHeaders, timeline, skipHeaders, macroScript, dbPath });
+        return res.json({ success: true, ...result });
+
+    } catch (err) {
+        console.error('❌ 依範本寫入本機 SQLite 發生核心崩潰:', err);
+        const status = err.isMacroError ? 400 : 500;
+        return res.status(status).json({ success: false, error: err.message, message: err.isMacroError ? err.message : '解析或寫入本機 SQLite 資料庫時失敗' });
     }
 });
 
 
 // ========================================================
-// 🌟 【新增安全區】：Google ID Token 安全簽章驗證器
+// 👤 目前登入者（身分來自 ADAuthAPI 簽發的 JWT，見上方 auth middleware）
 // ========================================================
-async function verifyGoogleToken(token) {
-    try {
-        const ticket = await oAuth2Client.verifyIdToken({
-            idToken: token,
-            audience: GOOGLE_CLIENT_ID,
-        });
-        const payload = ticket.getPayload();
-        return { success: true, payload }; // 解出身分資訊：email, name, picture
-    } catch (err) {
-        console.error("❌ Google ID Token 驗證拒絕:", err.message);
-        return { success: false, error: err.message };
-    }
-}
+app.get('/api/auth/me', (req, res) => {
+    res.json({ success: true, user: req.user });
+});
 
 
 const wss = new WebSocket.Server({ noServer: true });
 
+// 🌟 每個房間（templateCode / 檔案池）各自對應一份 Y.Doc + Awareness，
+//    負責把某個使用者送來的 sync/awareness 訊息轉發給同房間的其他所有連線。
+//    y-websocket 3.x 拿掉了舊版內建的 server 端 bin/utils，所以這段轉發邏輯要自己實作，
+//    否則客戶端各自的 Y.Doc 永遠不會收到彼此的更新（表現出來就是 A 改了 B 看不到）。
+const messageSync = 0;
+const messageAwareness = 1;
+const yRooms = new Map(); // roomName -> { doc, awareness, conns: Map<ws, Set<clientID>> }
+
+function getYRoom(roomName) {
+  let room = yRooms.get(roomName);
+  if (room) return room;
+
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  const conns = new Map();
+  room = { doc, awareness, conns };
+  yRooms.set(roomName, room);
+
+  const send = (ws, message) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(message, (err) => { if (err) ws.close(); });
+    }
+  };
+
+  doc.on('update', (update, origin) => {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageSync);
+    syncProtocol.writeUpdate(encoder, update);
+    const message = encoding.toUint8Array(encoder);
+    conns.forEach((_clientIDs, conn) => {
+      if (conn !== origin) send(conn, message);
+    });
+  });
+
+  awareness.on('update', ({ added, updated, removed }, origin) => {
+    const changedClients = added.concat(updated, removed);
+    if (origin !== null && conns.has(origin)) {
+      const connControlledIDs = conns.get(origin);
+      added.forEach((clientID) => connControlledIDs.add(clientID));
+      removed.forEach((clientID) => connControlledIDs.delete(clientID));
+    }
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageAwareness);
+    encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients));
+    const message = encoding.toUint8Array(encoder);
+    conns.forEach((_clientIDs, conn) => send(conn, message));
+  });
+
+  return room;
+}
+
+// canWrite：每次收到文件更新時才判斷，這樣編輯期限在連線期間到期也會立即生效
+function setupYWebsocketConnection(ws, roomName, canWrite = () => true) {
+  const { doc, awareness, conns } = getYRoom(roomName);
+  conns.set(ws, new Set());
+  ws.binaryType = 'arraybuffer';
+
+  const send = (message) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(message, (err) => { if (err) ws.close(); });
+    }
+  };
+
+  ws.on('message', (data) => {
+    try {
+      const uint8 = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer || data);
+      const decoder = decoding.createDecoder(uint8);
+      const messageType = decoding.readVarUint(decoder);
+      switch (messageType) {
+        case messageSync: {
+          // ⏰ 已過編輯期限的共同編輯者：只允許 sync step1（向伺服器索取目前文件內容），
+          //    丟棄 step2/update，避免繞過前端的唯讀限制把修改推給其他人（再被擁有者的自動儲存寫回檔案）
+          if (decoding.peekVarUint(decoder) !== syncProtocol.messageYjsSyncStep1 && !canWrite()) break;
+          const encoder = encoding.createEncoder();
+          encoding.writeVarUint(encoder, messageSync);
+          syncProtocol.readSyncMessage(decoder, encoder, doc, ws);
+          if (encoding.length(encoder) > 1) send(encoding.toUint8Array(encoder));
+          break;
+        }
+        case messageAwareness: {
+          awarenessProtocol.applyAwarenessUpdate(awareness, decoding.readVarUint8Array(decoder), ws);
+          break;
+        }
+      }
+    } catch (err) {
+      console.error('❌ [Yjs 訊息處理失敗]', err.message);
+    }
+  });
+
+  ws.on('close', () => {
+    const controlledIDs = conns.get(ws);
+    conns.delete(ws);
+    if (controlledIDs) {
+      awarenessProtocol.removeAwarenessStates(awareness, Array.from(controlledIDs), null);
+    }
+    if (conns.size === 0) yRooms.delete(roomName);
+  });
+
+  // 連線建立時：送出 sync step1，讓新加入者跟現有文件對齊
+  {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageSync);
+    syncProtocol.writeSyncStep1(encoder, doc);
+    send(encoding.toUint8Array(encoder));
+  }
+  // 並同步現有的 awareness 狀態（讓新加入者馬上看到誰在線上）
+  const awarenessStates = awareness.getStates();
+  if (awarenessStates.size > 0) {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageAwareness);
+    encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, Array.from(awarenessStates.keys())));
+    send(encoding.toUint8Array(encoder));
+  }
+}
+
+// 與前端 likeexcel.tsx 的 sanitizeForRoom 相同規則，用來核對房號確實對應到宣稱的擁有者/檔案
+const sanitizeForRoom = (value) => String(value).replace(/[^a-zA-Z0-9._-]/g, '_');
+
+async function resolvePoolRoomAccess(roomName, query) {
+  let user;
+  try { user = adUserFromToken(String(query.token || '')); } catch (e) { return null; }
+  const email = String(user.email || '').toLowerCase().trim();
+  const ownerRaw = String(query.owner || '');
+  const fileName = path.basename(String(query.file || ''));
+  if (!email || !ownerRaw || !fileName) return null;
+  if (roomName !== `excel-room-pool-${sanitizeForRoom(ownerRaw)}-${sanitizeForRoom(fileName)}`) return null;
+
+  const ownerEmail = ownerRaw.toLowerCase().trim();
+  const isOwner = ownerEmail === email;
+  if (!isOwner && !(await FileShare.findOne({ ownerEmail, fileName, invitedEmail: email }))) return null;
+
+  const userDir = getUserPoolDir(ownerEmail);
+  const fullPath = resolvePoolFile(userDir, fileName);
+  if (!fullPath || !fs.existsSync(fullPath)) return null;
+  return { canWrite: () => !getPoolEditLock(userDir, fileName, isOwner).readOnly };
+}
+
 // 在 server.on('upgrade') 時，必須支援帶有 query string 的路徑比對
 server.on('upgrade', (request, socket, head) => {
   const { pathname, query } = url.parse(request.url, true);
-  
-  // 🔴 注意：比對路徑時，不能直接用 request.url === '/excel-room-...' 
+
+  // 🔴 注意：比對路徑時，不能直接用 request.url === '/excel-room-...'
   // 必須用 pathname 來比對，否則帶了 ?auth_token 欄位後會比對失敗而 404！
-  if (pathname.startsWith('/excel-room-')) {
+  if (pathname.startsWith('/excel-room-pool-')) {
+    // 🔐 檔案池協作房：必須帶登入權杖 + 擁有者/檔名，驗證房號與存取權限後才允許連線，
+    //    並依編輯期限決定這條連線能不能推送修改
+    resolvePoolRoomAccess(pathname.slice(1), query)
+      .then((access) => {
+        if (!access) { socket.destroy(); return; }
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          setupYWebsocketConnection(ws, pathname.slice(1), access.canWrite);
+        });
+      })
+      .catch(() => socket.destroy());
+  } else if (pathname.startsWith('/excel-room-')) {
     wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
+      const roomName = pathname.slice(1); // 去掉開頭斜線，對應前端 roomName
+      setupYWebsocketConnection(ws, roomName);
     });
   } else {
     socket.destroy();
   }
 });
 
-// 🎯 解決前端 get-templates 404 錯誤的關鍵路由
-app.get('/api/spreadsheet/get-templates', (req, res) => {
-    console.log("📂 前端正在請求試算表模板清單...");
-    // 先回傳一個空陣列，確保前端不會因為 404 報錯而卡死
-    res.json([]); 
-});
-
 app.get('/api/user/profile', (req, res) => {
     // req.user 是由前面的 auth middleware 驗證 ADAuthAPI 簽發的 JWT 後解出的
-    // { domain, username }，不再直接信任客戶端可自行偽造的 x-remote-user header。
-    res.json({ id: req.user.username, domain: req.user.domain });
+    // { domain, username, email, name }，不再直接信任客戶端可自行偽造的 x-remote-user header。
+    res.json({ id: req.user.username, domain: req.user.domain, email: req.user.email, name: req.user.name });
 });
 
 // ==========================================
-// 📋 取得所有範本及對應的 L2 欄位設定
+// 📋 取得所有 XLSX Template Setup 範本（來自 MongoDB，取代舊的 MSSQL xlsx2dbsetL1/L2/L3）
 // ==========================================
-app.get('/api/xlsx2dbsetL1', async (req, res) => {
+app.get('/api/spreadsheet/get-templates', async (req, res) => {
   try {
-    // 1. 取得預設或指定的資料庫連線池 (對應你的 pools 架構)
-    let pool = pools.get('default');
-    if (!pool) {
-      pool = await new sql.ConnectionPool(dbConfig).connect();
-      pools.set('default', pool);
-    }
-
-    // 2. 查詢主範本資料表 (xlsx2dbsetL1)
-    const templateResult = await pool.request().query('SELECT * FROM xlsx2dbsetL1');
-    const templates = templateResult.recordset;
-
-    // 3. 逐一撈取每個範本對應的 L2 (xlsx2dbsetL2) 與 L3 (xlsx2dbsetL3) 設定
-    const detailedTemplates = await Promise.all(templates.map(async (t) => {
-      // 3.1 查詢 L2 欄位對應設定
-      const l2Result = await pool.request()
-        .input('templateId', sql.Int, t.ID)
-        .query('SELECT col AS excelColumn, field AS dbFieldName, space, [regexp] AS filterExpression FROM xlsx2dbsetL2 WHERE ID = @templateId');
-      
-      const l2Rows = l2Result.recordset;
-
-      // 3.2 查詢 L3 範本 metadata 設定 (xlsx2dbsetL3)
-      const l3Result = await pool.request()
-        .input('templateId', sql.Int, t.ID)
-        .query('SELECT startcol, endcol, yearrow, itemrow, skipspace FROM xlsx2dbsetL3 WHERE ID = @templateId');
-      
-      // 假設 L3 對應單一筆記錄或取第一筆，若無則給預設值
-      const l3Row = l3Result.recordset[0] || {
-        startcol: 1,
-        endcol: 10,
-        yearrow: 1,
-        itemrow: 2,
-        skipspace: 0
-      };
-
-      return {
-        ...t,
-        // 對應前端需要的 rowHeaders 結構 (L2)
-        rowHeaders: l2Rows.map((row, index) => ({
-          id: String(index + 1),
-          excelColumn: row.excelColumn || '',
-          dbFieldName: row.dbFieldName || '',
-          isGrouped: row.space === 1,
-          filterType: row.filterExpression ? 'regex' : 'none',
-          filterExpression: row.filterExpression || ''
-        })),
-        // 對應前端 Step 4 的 L3 座標與對應設定
-        l3Settings: {
-          startCol: l3Row.startcol,
-          endCol: l3Row.endcol,
-          yearRow: l3Row.yearrow,
-          itemRow: l3Row.itemrow,
-          skipSpace: l3Row.skipspace
-        }
-      };
-    }));
-
-    res.json(detailedTemplates);
+    const templates = await Template.find().sort({ templateCode: 1 }).lean();
+    res.json(templates.map(t => ({
+      ID: t.templateCode,
+      name: t.templateName,
+      dbname: t.targetTable,
+      descriptionl: t.description,
+      sheet: t.sheetValue,
+      rowstart: t.dataStartRow,
+      filename: t.filename,
+      dbFile: t.dbFile,
+      rowHeaders: t.rowHeaders,
+      skipHeaders: t.skipHeaders,
+      macroScript: t.macroScript,
+      l3Settings: {
+        startCol: t.timeline?.startColumn,
+        endCol: t.timeline?.endColumn,
+        yearRow: t.timeline?.yearRow,
+        itemRow: t.timeline?.itemRow,
+        skipSpace: t.timeline?.skipSpace,
+        dbYearField: t.timeline?.dbYearField,
+        dbItemField: t.timeline?.dbItemField,
+        dbValueField: t.timeline?.dbValueField,
+      },
+    })));
   } catch (err) {
-    console.error('❌ 讀取 xlsx2dbsetL1 失敗:', err.message);
+    console.error('❌ 讀取範本清單失敗:', err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -1692,30 +2521,25 @@ app.get('/api/xlsx2dbsetL1', async (req, res) => {
 // ==========================================
 // 📋 取得指定資料表的所有欄位名稱 (請確認這段程式碼存在於 port 3000 的 Express 檔案中)
 // ==========================================
-app.get('/api/table-columns', async (req, res) => {
+app.get('/api/table-columns', (req, res) => {
   const tableName = req.query.table;
-  if (!tableName) {
-    return res.status(400).json({ success: false, message: 'Table name is required' });
+  const dbFile = req.query.dbFile;
+
+  if (!tableName || !isValidIdentifier(String(tableName))) {
+    return res.status(400).json({ success: false, message: 'Table name is required and must be a valid identifier' });
+  }
+
+  const dbPath = resolveSqliteDbPath(dbFile, req.user.email);
+  if (!dbPath || !fs.existsSync(dbPath)) {
+    return res.status(400).json({ success: false, message: '請先建立或選擇本機 SQLite 資料庫檔案' });
   }
 
   try {
-    let pool = pools.get('default');
-    if (!pool) {
-      pool = await new sql.ConnectionPool(dbConfig).connect();
-      pools.set('default', pool);
-    }
+    const db = getSqliteDb(dbFile, req.user.email);
+    const columns = db.prepare(`PRAGMA table_info("${tableName}")`).all();
 
-    const result = await pool.request()
-      .input('tableName', sql.VarChar, tableName)
-      .query(`
-        SELECT COLUMN_NAME as name, DATA_TYPE as type 
-        FROM INFORMATION_SCHEMA.COLUMNS 
-        WHERE TABLE_NAME = @tableName
-        ORDER BY ORDINAL_POSITION;
-      `);
-
-    // This now sends an array of objects: [{ name: 'Col1', type: 'int' }, ...]
-    res.json({ success: true, columns: result.recordset });
+    // This now sends an array of objects: [{ name: 'Col1', type: 'TEXT' }, ...]
+    res.json({ success: true, columns: columns.map(c => ({ name: c.name, type: c.type })) });
   } catch (err) {
     console.error('❌ 取得資料庫欄位失敗:', err.message);
     res.status(500).json({ success: false, message: err.message });

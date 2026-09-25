@@ -1,29 +1,31 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthProvider';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import Home from './pages/Home';
-import Dashboard from './pages/Dashboard';
-import ToolsPage from './pages/ToolsPage';
-import FAQuotation from './pages/faquotation'; // Import new file
-import FaQuo from './pages/faquo'; // Import your new form file
-import Approve from './pages/approve';         // Import new file
-import LikeExcel from './pages/likeexcel'; // Import it
-import LikeExcelAD from './pages/likeexcelAD'; // Import it
-import { ExcelMappingSetup } from './pages/ExcelMappingSetup';
-import { EMailClassifySetup } from './pages/EMailClassifySetup'; 
-import  LikeExcelList  from './pages/ExcelList';
-import DailyForecastChangePage from './pages/DailyForecastChangePage';
 
-import { registerLicense } from "@syncfusion/ej2-base";
+// Everything behind login is lazy-loaded so the landing page doesn't have to
+// download Syncfusion / Yjs / recharts before it can render.
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const ToolsPage = lazy(() => import('./pages/ToolsPage'));
+const FAQuotation = lazy(() => import('./pages/faquotation'));
+const FaQuo = lazy(() => import('./pages/faquo'));
+const Approve = lazy(() => import('./pages/approve'));
+const LikeExcel = lazy(() => import('./pages/likeexcel'));
+const LikeExcelAD = lazy(() => import('./pages/likeexcelAD'));
+const ExcelMappingSetup = lazy(() => import('./pages/ExcelMappingSetup'));
+const EMailClassifySetup = lazy(() => import('./pages/EMailClassifySetup').then(m => ({ default: m.EMailClassifySetup })));
+const LikeExcelList = lazy(() => import('./pages/ExcelList'));
+const DailyForecastChangePage = lazy(() => import('./pages/DailyForecastChangePage'));
+const DbConsole = lazy(() => import('./pages/DbConsole'));
 
-registerLicense(
-"IAk8BicRIAEqCzQhAR8kAxMHIgRJXmFXf013TGhYfUFzdUpPaVVYVHdeSFhqQ3taZiUeUn1ecnFURGNcU0V3W0ZVZkB/Vn1GYQ=="
-);
+const pageFallback = <div className="p-6 text-gray-500">Loading…</div>;
 
 export default function App() {
   return (
     <AuthProvider>
+      <Suspense fallback={pageFallback}>
       <Routes>
         {/* 1. MOVE HOME HERE - Outside the Layout */}
         <Route path="/" element={<Home />} />
@@ -45,12 +47,14 @@ export default function App() {
             {/* 🌟 新增：對接到 Layout.tsx 側邊欄點擊的網址路徑 */}
             <Route path="excel-mapping-setup" element={<ExcelMappingSetup />}/>
             <Route path="like-excel-list" element={<LikeExcelList />}/>
+            <Route path="db-console" element={<DbConsole />}/>
 
             {/* 📊 新增：Report > Forecast Change */}
             <Route path="report/forecast-change" element={<DailyForecastChangePage />}/>
           </Route>
         </Route>
       </Routes>
+      </Suspense>
     </AuthProvider>
   );
 }

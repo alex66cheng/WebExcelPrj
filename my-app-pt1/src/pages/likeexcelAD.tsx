@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE, apiFetch } from '../config/apiBase';
 import { useAuth } from '../context/useAuth';
+import '../config/syncfusionLicense';
 import '@syncfusion/ej2-react-buttons';
 import { 
   SpreadsheetComponent, SheetsDirective, SheetDirective, 
