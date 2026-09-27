@@ -11,11 +11,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "serve:prod": "vite build && node serve-dist.mjs --host 103.200.219.246 --port 5173"
   },
   "dependencies": {
     "@react-oauth/google": "^0.13.5",
     "@syncfusion/ej2-base": "^32.1.19",
+    "@syncfusion/ej2-locale": "^32.2.5",
     "@syncfusion/ej2-react-buttons": "^32.1.21",
     "@syncfusion/ej2-react-charts": "^32.1.22",
     "@syncfusion/ej2-react-layouts": "^32.1.19",

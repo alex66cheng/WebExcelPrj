@@ -2,6 +2,9 @@
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { SpreadsheetComponent, SheetsDirective, SheetDirective } from '@syncfusion/ej2-react-spreadsheet';
 import '../config/syncfusionLicense';
+import { useT } from '../i18n/useI18n';
+import dict from '../i18n/locales/faquo';
+import { useSyncfusionLocale } from '../i18n/syncfusion';
 
 // Syncfusion Styles
 import "@syncfusion/ej2-base/styles/material.css";
@@ -17,6 +20,8 @@ import "@syncfusion/ej2-react-spreadsheet/styles/material.css";
 export default function FaQuo() {
   const navigate = useNavigate();
   const { id } = useParams();
+  const t = useT(dict);
+  const sfLocale = useSyncfusionLocale();
 
   return (
     <div className="h-full flex flex-col bg-white">
@@ -24,10 +29,10 @@ export default function FaQuo() {
       <div className="flex justify-between items-center p-4 border-b border-slate-200 bg-slate-50 shrink-0">
         <div className="flex items-center gap-3">
           <Link to="/fa-quotation" className="text-blue-600 hover:bg-blue-100 px-2 py-1 rounded text-sm font-bold transition-colors">
-            ← Back
+            {t('back')}
           </Link>
           <h1 className="text-lg font-bold text-slate-800">
-            {id ? `Edit Quotation: ${id}` : 'New FA Quotation'}
+            {id ? t('editTitle', { id }) : t('newTitle')}
           </h1>
         </div>
         <div className="flex gap-2">
@@ -35,10 +40,10 @@ export default function FaQuo() {
             onClick={() => navigate('/fa-quotation')}
             className="px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-100 transition-colors"
           >
-            Cancel
+            {t('cancel')}
           </button>
           <button className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md hover:bg-blue-700 transition-colors">
-            Save Quote
+            {t('save')}
           </button>
         </div>
       </div>
@@ -46,15 +51,15 @@ export default function FaQuo() {
       {/* COMPACT INFO BOX */}
       <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4 bg-white border-b border-slate-100 shrink-0">
         <div className="flex flex-col gap-1">
-          <label className="text-[10px] font-bold uppercase text-slate-400">Customer Name</label>
+          <label className="text-[10px] font-bold uppercase text-slate-400">{t('customerName')}</label>
           <input type="text" className="p-2 border border-slate-200 rounded text-sm outline-blue-500" placeholder="Acme Corp" />
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-[10px] font-bold uppercase text-slate-400">Date</label>
+          <label className="text-[10px] font-bold uppercase text-slate-400">{t('date')}</label>
           <input type="date" className="p-2 border border-slate-200 rounded text-sm outline-blue-500" />
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-[10px] font-bold uppercase text-slate-400">Reference No.</label>
+          <label className="text-[10px] font-bold uppercase text-slate-400">{t('referenceNo')}</label>
           <input type="text" className="p-2 border border-slate-200 rounded text-sm outline-blue-500" placeholder="REF-001" />
         </div>
       </div>
@@ -63,6 +68,7 @@ export default function FaQuo() {
       <div className="flex-1 relative overflow-hidden bg-slate-200">
         <div className="h-[calc(100vh-48px)] inset-0">
           <SpreadsheetComponent 
+            locale={sfLocale}
             height="100%" 
             width="100%"
             allowOpen={true} 

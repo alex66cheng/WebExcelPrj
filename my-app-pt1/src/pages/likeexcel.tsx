@@ -1,11 +1,15 @@
 // src/pages/likeexcel.tsx
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { API_BASE, WS_BASE, apiFetch, getAuthToken } from '../config/apiBase';
 import { useAuth } from '../context/useAuth';
 import '../config/syncfusionLicense';
 import EditDeadlineControl from '../components/EditDeadlineControl';
+import { useLanguage, useT } from '../i18n/useI18n';
+import { useSyncfusionLocale } from '../i18n/syncfusion';
+import dict from '../i18n/locales/likeexcel';
 import { formatDeadline, isDeadlinePassed } from '../utils/editDeadline';
+import { listTopLevelFunctions } from '../utils/macroFunctions';
 import '@syncfusion/ej2-react-buttons';
 import { SpreadsheetComponent } from '@syncfusion/ej2-react-spreadsheet';
 
@@ -31,6 +35,10 @@ interface MongoTemplateOption {
   templateCode: string;
   templateName: string;
   targetTable?: string;
+  // 範本在步驟 5 存的巨集腳本（函式下拉選單與 ▶ 執行用）
+  macroScript?: string;
+  // 本機備援/示範用的範本（MongoDB 沒資料或連不上時）：顯示名稱依介面語言翻譯
+  nameKey?: 'fallbackTemplateDefault' | 'mockTemplateNvidia' | 'mockTemplateAmd' | 'mockTemplateIntel';
 }
 
 // 從 Excel 檔案池開啟時，帶回來的檔案資訊
@@ -76,7 +84,16 @@ export default function LikeExcel() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
+  const t = useT(dict);
+  const { lang } = useLanguage();
+  const syncfusionLocale = useSyncfusionLocale();
+  // Yjs 連線 effect 只在換房間時重建，用 ref 取得最新語言的 t（例如訪客名稱）
+  const tRef = useRef(t);
+  useEffect(() => { tRef.current = t; }, [t]);
   const [isSavingToDb, setIsSavingToDb] = useState(false);
+  // ▶ 範本巨集：函式下拉選單（空字串 = 整份腳本）與執行中狀態
+  const [macroEntry, setMacroEntry] = useState('');
+  const [isRunningMacro, setIsRunningMacro] = useState(false);
 
   // 🌟 檔案池模式：網址帶 ?poolFile=xxx.xlsx 時，直接載入該檔案供檢視與編輯
   //    ?owner= 帶的是檔案「擁有者」email：受邀共同編輯的人開啟連結時會帶這個參數，
@@ -108,6 +125,10 @@ export default function LikeExcel() {
   const [templateOptions, setTemplateOptions] = useState<MongoTemplateOption[]>([]);
   // 當前選中的 MongoDB 範本物件實體
   const [selectedTemplate, setSelectedTemplate] = useState<MongoTemplateOption | null>(null);
+  const macroFunctions = useMemo(() => listTopLevelFunctions(selectedTemplate?.macroScript || ''), [selectedTemplate]);
+  // 換範本後原本選的函式不存在時，自動退回「整份腳本」
+  const activeMacroEntry = macroFunctions.includes(macroEntry) ? macroEntry : '';
+  const hasMacro = !!selectedTemplate?.macroScript?.trim();
 
   // 🌟 即時協作狀態：目前在線協作者與 Yjs 連線初始化狀態
   //    只有在網址帶 poolFile（一進頁面就要連線）時才以「未初始化」開局顯示連線中遮罩；
@@ -158,6 +179,7 @@ export default function LikeExcel() {
             templateCode: t.ID,
             templateName: t.name,
             targetTable: t.dbname,
+            macroScript: t.macroScript || '',
           }));
           console.log("🎯 成功從 MongoDB 撈到真實範本：", templates);
           setTemplateOptions(templates);
@@ -165,7 +187,7 @@ export default function LikeExcel() {
         } else {
           console.warn("⚠️ MongoDB templates 集合中尚無任何資料，啟用動態 Fallback 清單");
           const fallbackList: MongoTemplateOption[] = [
-            { templateCode: 'DEFAULT_A', templateName: '請至 Setup 設定頁面建立首組範本 (DEFAULT_A)', targetTable: 'factory_demand_forecast2' }
+            { templateCode: 'DEFAULT_A', templateName: 'DEFAULT_A', nameKey: 'fallbackTemplateDefault', targetTable: 'factory_demand_forecast2' }
           ];
           setTemplateOptions(fallbackList);
           setSelectedTemplate(fallbackList[0]);
@@ -174,9 +196,9 @@ export default function LikeExcel() {
       .catch(err => {
         console.error("❌ 無法連線至 MongoDB 範本 API，啟用本機靜態模擬清單:", err);
         const defaultList: MongoTemplateOption[] = [
-          { templateCode: 'A0001', templateName: 'NVIDIA 矩陣需求預估範本 (A0001)', targetTable: 'factory_demand_forecast2' },
-          { templateCode: 'B0002', templateName: 'AMD 產能排程配置範本 (B0002)', targetTable: 'amd_production_schedule' },
-          { templateCode: 'C0003', templateName: 'INTEL 供應鏈庫存追蹤範本 (C0003)', targetTable: 'intel_inventory_tracking' }
+          { templateCode: 'A0001', templateName: 'A0001', nameKey: 'mockTemplateNvidia', targetTable: 'factory_demand_forecast2' },
+          { templateCode: 'B0002', templateName: 'B0002', nameKey: 'mockTemplateAmd', targetTable: 'amd_production_schedule' },
+          { templateCode: 'C0003', templateName: 'C0003', nameKey: 'mockTemplateIntel', targetTable: 'intel_inventory_tracking' }
         ];
         setTemplateOptions(defaultList);
         setSelectedTemplate(defaultList[0]);
@@ -206,7 +228,7 @@ export default function LikeExcel() {
     apiFetch(`/api/excel-pool/open/${encodeURIComponent(poolFile)}${ownerQuery}`)
       .then(async (res) => {
         const data = await res.json();
-        if (!res.ok || !data.success) throw new Error(data.message || '開啟檔案失敗');
+        if (!res.ok || !data.success) throw new Error(data.message || tRef.current('openFileFailed'));
         return data;
       })
       .then((data) => {
@@ -226,16 +248,16 @@ export default function LikeExcel() {
       .finally(() => setIsOpeningFile(false))
       .catch((err) => {
         console.error('❌ 開啟檔案池檔案失敗:', err);
-        alert(`❌ 無法開啟檔案 [${poolFile}]:\n${err.message}`);
+        alert(tRef.current('cannotOpenFile', { file: poolFile, error: err.message }));
       });
   }, [poolFile, ownerParam]);
 
   // 🌟 自動儲存狀態：時間戳記（每次成功回存都會更新）、是否正在自動儲存中、上次失敗訊息、
-  //    以及使用者是否手動開啟/關閉了自動儲存（預設開啟）。
+  //    以及使用者是否手動開啟/關閉了自動儲存（預設關閉，需手動開啟）。
   const [lastAutoSavedAt, setLastAutoSavedAt] = useState<Date | null>(null);
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null);
-  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
 
   // 🌟 檔案池模式：將編輯後的內容回存檔案池
   //    silent: true 時（自動儲存用）不彈出確認/結果 alert，安靜地在背景執行。
@@ -247,8 +269,8 @@ export default function LikeExcel() {
 
     if (!silent) {
       const confirmMsg = mode === 'overwrite'
-        ? `確定要以目前畫面的內容「覆蓋」檔案池中的原檔 [${poolInfo.fileName}] 嗎？此動作無法復原。`
-        : `將把目前畫面的內容另存為一個新檔案放入檔案池 (原檔 [${poolInfo.fileName}] 保持不變)，確定要繼續嗎？`;
+        ? t('confirmOverwrite', { file: poolInfo.fileName })
+        : t('confirmSaveAsNew', { file: poolInfo.fileName });
       if (!window.confirm(confirmMsg)) return;
     }
 
@@ -269,11 +291,11 @@ export default function LikeExcel() {
       apiFetch('/api/excel-pool/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: poolInfo.fileName, mode, owner: ownerParam || undefined, spreadsheetData: workbookJson })
+        body: JSON.stringify({ fileName: poolInfo.fileName, mode, owner: ownerParam || undefined, auto: silent, spreadsheetData: workbookJson })
       })
         .then(async (res) => {
           const result = await res.json();
-          if (!res.ok || !result.success) throw new Error(result.message || '回存失敗');
+          if (!res.ok || !result.success) throw new Error(result.message || t('saveFailed'));
           return result;
         })
         .then((result) => {
@@ -285,7 +307,7 @@ export default function LikeExcel() {
         })
         .catch((err) => {
           console.error('❌ 回存檔案池失敗:', err);
-          if (!silent) alert(`❌ 回存檔案池發生錯誤:\n${err.message}`);
+          if (!silent) alert(t('saveToPoolError', { error: err.message }));
           else setAutoSaveError(err.message);
           setIsSavingToPool(false);
           if (silent) setIsAutoSaving(false);
@@ -295,7 +317,7 @@ export default function LikeExcel() {
       //    否則 isSavingToPool 會卡在 true，之後每 60 秒的自動儲存都會被 onSaveToPool 開頭那行擋掉，
       //    而且畫面上完全不會顯示任何錯誤或警示。
       console.error('❌ 準備回存資料失敗:', err);
-      if (!silent) alert(`❌ 準備回存資料時發生錯誤:\n${err.message}`);
+      if (!silent) alert(t('prepareSaveError', { error: err.message }));
       else setAutoSaveError(err.message);
       setIsSavingToPool(false);
       if (silent) setIsAutoSaving(false);
@@ -370,14 +392,14 @@ export default function LikeExcel() {
     })
       .then(async (res) => {
         const data = await res.json();
-        if (!res.ok || !data.success) throw new Error(data.message || '邀請失敗');
+        if (!res.ok || !data.success) throw new Error(data.message || t('inviteFailed'));
         return data;
       })
       .then(() => {
         setInviteEmailInput('');
         loadInvites();
       })
-      .catch(err => alert(`❌ 邀請共同編輯失敗:\n${err.message}`))
+      .catch(err => alert(t('inviteFailedAlert', { error: err.message })))
       .finally(() => setInviteLoading(false));
   };
 
@@ -402,6 +424,22 @@ export default function LikeExcel() {
 
   // 📝 將儲存格修改紀錄送至伺服器
   const logCellChange = useCallback((cellAddress: string, oldValue: any, newValue: any, reason: string) => {
+    // 📜 檔案池模式：記到這個檔案自己的修訂紀錄（修改者由後端依登入身分判定）
+    if (poolFile) {
+      apiFetch(`/api/excel-pool/${encodeURIComponent(poolFile)}/revisions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          owner: ownerParam || undefined,
+          cellAddress,
+          oldValue: oldValue !== undefined && oldValue !== null ? String(oldValue) : null,
+          newValue: newValue !== undefined && newValue !== null ? String(newValue) : null,
+          reason
+        })
+      }).catch(err => console.error('Failed to log file revision:', err));
+      return;
+    }
+
     if (!selectedTemplate) return;
     const userEmail = userRef.current?.email || 'anonymous';
 
@@ -418,7 +456,7 @@ export default function LikeExcel() {
         reason
       })
     }).catch(err => console.error('Failed to log cell change:', err));
-  }, [selectedTemplate]);
+  }, [selectedTemplate, poolFile, ownerParam]);
 
   const handleReasonSubmit = () => {
     if (pendingCellChange) {
@@ -471,7 +509,7 @@ export default function LikeExcel() {
 
     const currentUser = userRef.current;
     provider.awareness.setLocalStateField('user', {
-      name: currentUser?.name || '訪客成員',
+      name: currentUser?.name || tRef.current('guestName'),
       picture: currentUser?.picture || 'https://www.gravatar.com/avatar/?d=mp',
       email: currentUser?.email || 'guest@local',
       color: currentUser ? getUserColor(currentUser.email) : '#718096'
@@ -555,11 +593,11 @@ export default function LikeExcel() {
     if (!spreadsheet || isSavingToDb) return;
 
     if (!selectedTemplate) {
-      alert("⚠️ 請先選擇一個對應的 MongoDB 範本！");
+      alert(t('selectTemplateFirst'));
       return;
     }
 
-    const confirmMsg = `確定要將目前的資料內容，依據範本 [${selectedTemplate.templateCode}] 的對應規格解析，並寫入該範本綁定的 SQLite 資料表 [${selectedTemplate.targetTable || '預設'}] 嗎？`;
+    const confirmMsg = t('confirmSaveToDb', { template: selectedTemplate.templateCode, table: selectedTemplate.targetTable || t('defaultTable') });
     if (!window.confirm(confirmMsg)) return;
 
     setIsSavingToDb(true);
@@ -582,23 +620,72 @@ export default function LikeExcel() {
       })
       .then(async (res) => {
         const result = await res.json();
-        if (!res.ok || !result.success) throw new Error(result.message || result.error || "寫入 SQLite 資料庫失敗");
+        if (!res.ok || !result.success) throw new Error(result.message || result.error || t('sqliteSaveFailed'));
         return result;
       })
       .then((data) => {
-        alert(`🎉 SQLite 儲存成功！\n${data.message || `共寫入 ${data.insertedCount} 筆明細數據。`}`);
+        alert(t('sqliteSaveSuccess', { detail: data.message || t('sqliteInsertedCount', { count: data.insertedCount }) }));
         setIsSavingToDb(false);
       })
       .catch((err) => {
         console.error("❌ SQLite Storage Error:", err);
-        alert(`❌ 儲存至 SQLite 發生錯誤:\n${err.message}`);
+        alert(t('sqliteSaveError', { error: err.message }));
         setIsSavingToDb(false);
       });
     }).catch((err: any) => {
       console.error("❌ 準備寫入資料失敗:", err);
-      alert(`❌ 準備寫入資料時發生錯誤:\n${err.message}`);
+      alert(t('prepareWriteError', { error: err.message }));
       setIsSavingToDb(false);
     });
+  };
+
+  // ▶ 對目前畫面內容執行範本巨集：後端只回傳 sheet.set() 的修改，這裡套用到網格並比照一般編輯
+  //    同步給協作者、寫修訂紀錄，之後由回存/自動儲存寫進檔案（不寫資料庫）
+  const onRunMacro = () => {
+    const spreadsheet = spreadsheetRef.current as any;
+    if (!spreadsheet || !selectedTemplate || !hasMacro || isRunningMacro || isReadOnlyRef.current) return;
+    const fnLabel = activeMacroEntry ? `${activeMacroEntry}()` : t('macroWholeScript');
+
+    setIsRunningMacro(true);
+    spreadsheet.saveAsJson().then((response: any) => {
+      const rawJsonObject = response?.jsonObject;
+      const parsedJsonObject = typeof rawJsonObject === 'string' ? JSON.parse(rawJsonObject) : rawJsonObject;
+      const workbookJson = (parsedJsonObject && parsedJsonObject.Workbook) || response?.Workbook || response;
+
+      return apiFetch('/api/spreadsheet/run-template-macro', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ templateCode: selectedTemplate.templateCode, entry: activeMacroEntry, spreadsheetData: workbookJson })
+      }).then(res => res.json());
+    })
+      .then((result: any) => {
+        const logText = (result.logs || []).slice(0, 20).map((l: any) => l.text).join('\n');
+        if (!result.success) {
+          alert(t('macroRunFailed', { fn: fnLabel, error: result.error || result.message || 'Error' }) + (logText ? `\n\n${logText}` : ''));
+          return;
+        }
+        const changes: { address: string; value: any; oldValue: string | null }[] = result.changes || [];
+        const yCellsMap = yDocRef.current?.getMap('cells_data');
+        const userEmail = userRef.current?.email || 'anonymous';
+        changes.forEach(c => {
+          const address = `${result.sheetName}!${c.address}`;
+          spreadsheet.updateCell({ value: c.value }, address);
+          const col = c.address.match(/^[A-Z]+/)![0];
+          const colIndex = [...col].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+          const rowIndex = parseInt(c.address.slice(col.length), 10) - 1;
+          yCellsMap?.set(address, { value: c.value, address, rowIndex, colIndex, user: userEmail });
+          logCellChange(address, c.oldValue, c.value, t('macroChangeReason', { fn: fnLabel }));
+        });
+        const summary = changes.length
+          ? t('macroRunChanged', { fn: fnLabel, cells: changes.map(c => c.address).join(', ') })
+          : t('macroRunNoChanges', { fn: fnLabel });
+        alert(summary + (logText ? `\n\n${logText}` : ''));
+      })
+      .catch((err: any) => {
+        console.error('❌ 執行範本巨集失敗:', err);
+        alert(t('macroRunFailed', { fn: fnLabel, error: err.message }));
+      })
+      .finally(() => setIsRunningMacro(false));
   };
 
   const onBeforeOpen = (args: any) => {
@@ -675,25 +762,46 @@ export default function LikeExcel() {
             onClick={() => navigate(poolInfo ? '/like-excel-list' : '/tools')}
             className="text-slate-400 hover:text-white text-sm font-bold flex items-center gap-1 transition-colors shrink-0"
           >
-            ← <span className="hidden sm:inline">{poolInfo ? 'Back to File Pool' : 'Back to Tools'}</span>
+            ← <span className="hidden sm:inline">{poolInfo ? t('backToFilePool') : t('backToTools')}</span>
           </button>
           <div className="h-4 w-[1px] bg-slate-700 shrink-0"></div>
 
           {/* 下拉選單選擇器：僅檔案擁有者可選擇/變更對應範本 */}
           {isFileOwner && (
-            <div className="flex items-center gap-2 max-w-md w-full">
-              <span className="text-xs text-slate-400 font-medium shrink-0">選擇對應範本:</span>
+            <div className="flex items-center gap-2 max-w-2xl w-full">
+              <span className="text-xs text-slate-400 font-medium shrink-0">{t('selectTemplateLabel')}</span>
               <select
                 value={selectedTemplate?.templateCode || ''}
                 onChange={handleTemplateChange}
-                className="bg-slate-800 text-blue-400 border border-slate-700 text-xs font-mono rounded px-2 py-1 focus:outline-none focus:border-blue-500 w-full cursor-pointer transition-all"
+                className="bg-slate-800 text-blue-400 border border-slate-700 text-xs font-mono rounded px-2 py-1 focus:outline-none focus:border-blue-500 w-full min-w-0 cursor-pointer transition-all"
               >
                 {templateOptions.map((option) => (
                   <option key={option.templateCode} value={option.templateCode}>
-                    {option.templateName}
+                    {option.nameKey ? t(option.nameKey) : option.templateName}
                   </option>
                 ))}
               </select>
+
+              {/* ▶ 範本巨集：選擇要執行的函式（空 = 整份腳本）並執行 */}
+              <select
+                value={activeMacroEntry}
+                onChange={(e) => setMacroEntry(e.target.value)}
+                disabled={!hasMacro}
+                title={hasMacro ? t('macroSelectFunction') : t('macroNone')}
+                className="bg-slate-800 text-amber-300 border border-slate-700 text-xs font-mono rounded px-2 py-1 focus:outline-none focus:border-amber-500 w-40 shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:text-slate-500 transition-all"
+              >
+                <option value="">{hasMacro ? t('macroWholeScript') : t('macroNone')}</option>
+                {macroFunctions.map(name => <option key={name} value={name}>{name}()</option>)}
+              </select>
+              <button
+                type="button"
+                onClick={onRunMacro}
+                disabled={!hasMacro || isRunningMacro || isReadOnly}
+                title={t('macroRunTitle')}
+                className="shrink-0 px-3 py-1 text-xs font-bold rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                {isRunningMacro ? t('macroRunning') : t('macroRun')}
+              </button>
             </div>
           )}
         </div>
@@ -702,12 +810,12 @@ export default function LikeExcel() {
         <div className="flex gap-3 items-center shrink-0">
           {selectedTemplate && (
             <span className="text-[10px] bg-blue-950 text-blue-400 px-2 py-0.5 rounded border border-blue-800 font-mono hidden md:inline">
-              Target: {selectedTemplate.targetTable}
+              {t('targetLabel', { table: selectedTemplate.targetTable ?? '' })}
             </span>
           )}
           {user && (
             <div className="flex items-center gap-2">
-              {user.picture && <img src={user.picture} alt="profile" className="w-6 h-6 rounded-full object-cover" />}
+              {user.picture && <img src={user.picture} alt={t('profileAlt')} className="w-6 h-6 rounded-full object-cover" />}
               <span className="text-xs font-medium text-slate-300 hidden sm:inline">{user.name}</span>
             </div>
           )}
@@ -725,7 +833,7 @@ export default function LikeExcel() {
             </div>
             {poolInfo.sheetCount > 1 && (
               <div className="px-2 py-1 text-[10px] rounded border border-sky-600 bg-sky-950 text-sky-300" title={poolInfo.sheetNames.join(', ')}>
-                📑 共 {poolInfo.sheetCount} 個工作表，下方分頁皆可切換
+                {t('sheetCountBadge', { count: poolInfo.sheetCount })}
                 {/* 🌟 原檔中隱藏的分頁不會在這裡載入/顯示（跟 Excel 本身行為一致）——
                     避免隱藏分頁裡也塞了大量資料時，平白拖慢開檔速度 */}
               </div>
@@ -733,16 +841,16 @@ export default function LikeExcel() {
             {isReadOnly ? (
               <div
                 className="px-2 py-1 text-xs font-bold rounded border border-red-600 bg-red-950 text-red-300"
-                title={poolInfo.editDeadline ? `編輯期限：${formatDeadline(poolInfo.editDeadline)}` : undefined}
+                title={poolInfo.editDeadline ? t('deadlineTitle', { deadline: formatDeadline(poolInfo.editDeadline) }) : undefined}
               >
-                🔒 已超過編輯期限，唯讀
+                {t('readOnlyBadge')}
               </div>
             ) : poolInfo.editDeadline && (
               <div
                 className={`px-2 py-1 text-[10px] rounded border ${isDeadlinePassed(poolInfo.editDeadline) ? 'border-slate-600 bg-slate-900 text-slate-400' : 'border-amber-600 bg-amber-950 text-amber-300'}`}
-                title={poolInfo.isOwner ? '共同編輯者在期限後只能檢視，你本人不受限制' : undefined}
+                title={poolInfo.isOwner ? t('ownerDeadlineHint') : undefined}
               >
-                ⏰ {isDeadlinePassed(poolInfo.editDeadline) ? '共同編輯期限已過' : '可編輯至'} {formatDeadline(poolInfo.editDeadline)}
+                ⏰ {isDeadlinePassed(poolInfo.editDeadline) ? t('coEditDeadlinePassed') : t('editableUntil')} {formatDeadline(poolInfo.editDeadline)}
               </div>
             )}
             {!isReadOnly && (
@@ -751,7 +859,7 @@ export default function LikeExcel() {
               disabled={isSavingToPool}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded text-white bg-emerald-600 hover:bg-emerald-500 shadow-sm transition-all disabled:opacity-60"
             >
-              📄 {isSavingToPool ? '回存中…' : '另存新檔至檔案池'}
+              📄 {isSavingToPool ? t('saving') : t('saveAsNewToPool')}
             </button>
             )}
             {poolInfo.canOverwrite && !isReadOnly && (
@@ -761,30 +869,30 @@ export default function LikeExcel() {
                   disabled={isSavingToPool}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded text-white bg-rose-700 hover:bg-rose-600 shadow-sm transition-all disabled:opacity-60"
                 >
-                  💾 覆蓋原檔
+                  {t('overwriteOriginal')}
                 </button>
                 <button
                   onClick={() => setAutoSaveEnabled(prev => !prev)}
-                  title={autoSaveEnabled ? '點擊關閉自動儲存 (每 60 秒靜默回存一次)' : '點擊開啟自動儲存'}
+                  title={autoSaveEnabled ? t('autoSaveTurnOffTitle') : t('autoSaveTurnOnTitle')}
                   className={`flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold rounded border shadow-sm transition-all ${
                     autoSaveEnabled
                       ? 'bg-emerald-950 border-emerald-700 text-emerald-300 hover:bg-emerald-900'
                       : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'
                   }`}
                 >
-                  {autoSaveEnabled ? '🟢 自動儲存: 開' : '⚪ 自動儲存: 關'}
+                  {autoSaveEnabled ? t('autoSaveOn') : t('autoSaveOff')}
                 </button>
                 {!autoSaveEnabled ? null : isAutoSaving ? (
-                  <span className="flex items-center gap-1 text-[10px] text-blue-400 font-mono hidden md:inline-flex" title="每 60 秒自動靜默回存一次">
-                    <span className="animate-pulse">💾</span> 自動儲存中...
+                  <span className="flex items-center gap-1 text-[10px] text-blue-400 font-mono hidden md:inline-flex" title={t('autoSaveIntervalTitle')}>
+                    <span className="animate-pulse">💾</span> {t('autoSaving')}
                   </span>
                 ) : autoSaveError ? (
                   <span className="text-[10px] text-red-400 font-mono hidden md:inline" title={autoSaveError}>
-                    ⚠️ 自動儲存失敗
+                    {t('autoSaveFailed')}
                   </span>
                 ) : lastAutoSavedAt && (
-                  <span className="text-[10px] text-slate-500 font-mono hidden md:inline" title="每 60 秒自動靜默回存一次">
-                    🕒 自動儲存於 {lastAutoSavedAt.toLocaleTimeString()}
+                  <span className="text-[10px] text-slate-500 font-mono hidden md:inline" title={t('autoSaveIntervalTitle')}>
+                    {t('autoSavedAt', { time: lastAutoSavedAt.toLocaleTimeString(lang) })}
                   </span>
                 )}
               </>
@@ -794,9 +902,15 @@ export default function LikeExcel() {
                 onClick={openInviteModal}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded text-white bg-violet-600 hover:bg-violet-500 shadow-sm transition-all"
               >
-                🤝 邀請共同編輯
+                {t('inviteCollaborators')}
               </button>
             )}
+            <button
+              onClick={() => navigate(`/file-revisions?poolFile=${encodeURIComponent(poolInfo.fileName)}${ownerParam ? `&owner=${encodeURIComponent(ownerParam)}` : ''}`)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded text-white bg-slate-600 hover:bg-slate-500 shadow-sm transition-all"
+            >
+              {t('revisionHistory')}
+            </button>
             <div className="h-4 w-[1px] bg-slate-700" />
           </>
         )}
@@ -805,7 +919,7 @@ export default function LikeExcel() {
              避免檔案池模式下同時出現兩份意義重疊的協作者清單 */}
         {!(poolInfo && fileOwnerEmail) && (
           <div className="hidden lg:flex items-center gap-1.5 ml-2">
-            <span className="text-xs text-slate-500">正在協作:</span>
+            <span className="text-xs text-slate-500">{t('collaboratingLabel')}</span>
             <div className="flex -space-x-2 overflow-hidden">
               {collaborators.map((collab, index) => (
                 <img
@@ -825,7 +939,7 @@ export default function LikeExcel() {
              綠點代表目前在線上，灰點代表離線 */}
         {poolInfo && fileOwnerEmail && (
           <div className="hidden lg:flex items-center gap-1.5 ml-3">
-            <span className="text-xs text-slate-500">共同編輯者:</span>
+            <span className="text-xs text-slate-500">{t('coEditorsLabel')}</span>
             <div className="flex items-center gap-1 flex-wrap">
               {[fileOwnerEmail, ...inviteList].map((email) => {
                 const online = collaborators.some((c) => c.email === email);
@@ -833,7 +947,7 @@ export default function LikeExcel() {
                 return (
                   <span
                     key={email}
-                    title={`${email}${isOwnerEmail ? '（擁有者）' : ''} · ${online ? '在線上' : '離線'} · 儲存格編輯顏色`}
+                    title={t('coEditorTitle', { email, owner: isOwnerEmail ? t('ownerSuffix') : '', status: online ? t('online') : t('offline') })}
                     className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono border cursor-help ${
                       online
                         ? 'bg-emerald-950 border-emerald-700 text-emerald-300'
@@ -856,17 +970,6 @@ export default function LikeExcel() {
 
         <div className="flex-1" /> {/* 彈性空格推至右側 */}
 
-        {/* 🌟 新增：VBA like 按鈕 (位於 Save to DB 左邊) */}
-        <button
-          onClick={() => {
-            console.log("⚡ 觸發類 VBA 巨集腳本處理...");
-            alert(`⚡ 已啟動類 VBA 巨集處理引擎！\n目前正針對範本 [${selectedTemplate?.templateCode}] 的活頁簿網格進行格式掃描、自訂動態公式重算與前端資料校正。`);
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded text-amber-100 bg-gradient-to-r from-amber-700 to-yellow-600 hover:from-amber-600 hover:to-yellow-500 shadow-sm transition-all"
-        >
-          ⚙️ VBA like
-        </button>
-
         {/* 儲存至資料庫按鈕：僅檔案擁有者可操作 */}
         {isFileOwner && (
           <button
@@ -880,11 +983,11 @@ export default function LikeExcel() {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                Storing to DB...
+                {t('storingToDb')}
               </>
             ) : (
               <>
-                <span>📥</span> Save to DB
+                <span>📥</span> {t('saveToDb')}
               </>
             )}
           </button>
@@ -907,6 +1010,8 @@ export default function LikeExcel() {
             }}
             height="100%"
             width="100%"
+            // 🌐 功能區/右鍵選單/對話框語言（切換時 Syncfusion 會以目前的活頁簿模型重繪，資料不會遺失）
+            locale={syncfusionLocale}
             openUrl={`${API_BASE}/api/spreadsheet/open`}
             saveUrl={`${API_BASE}/api/spreadsheet/saveX2`} // 統一交給優化過的 saveX2 高擬真導出
             allowOpen={!isReadOnly}
@@ -946,7 +1051,7 @@ export default function LikeExcel() {
             <div className="absolute inset-0 bg-white/90 backdrop-blur-xs flex flex-col items-center justify-center z-40">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-3"></div>
               <p className="text-xs font-mono text-slate-500">
-                {isOpeningFile ? '📂 正在開啟檔案，資料量較大時可能需要幾秒鐘…' : '⚡ 正在安全連結 Yjs 分散式同步房號...'}
+                {isOpeningFile ? t('openingFile') : t('connectingRoom')}
               </p>
             </div>
           )}
@@ -955,13 +1060,13 @@ export default function LikeExcel() {
           {showInviteModal && poolInfo && (
             <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-50">
               <div className="bg-white rounded-lg shadow-xl p-6 w-96 max-w-[90vw]">
-                <h3 className="text-lg font-bold text-slate-800 mb-1">邀請共同編輯</h3>
+                <h3 className="text-lg font-bold text-slate-800 mb-1">{t('inviteTitle')}</h3>
                 <p className="text-xs text-slate-500 mb-4 truncate" title={poolInfo.fileName}>
-                  檔案：{poolInfo.displayName}
+                  {t('fileLabel', { name: poolInfo.displayName })}
                 </p>
 
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  對方的 Email：
+                  {t('inviteeEmailLabel')}
                 </label>
                 <div className="flex gap-2 mb-4">
                   <input
@@ -978,7 +1083,7 @@ export default function LikeExcel() {
                     disabled={inviteLoading || !inviteEmailInput.trim()}
                     className="px-4 py-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 rounded transition-colors disabled:opacity-50"
                   >
-                    邀請
+                    {t('inviteButton')}
                   </button>
                 </div>
 
@@ -989,10 +1094,10 @@ export default function LikeExcel() {
                   onError={(msg) => alert(`❌ ${msg}`)}
                 />
 
-                <div className="text-xs font-semibold text-slate-500 mb-1">已邀請的共同編輯者：</div>
+                <div className="text-xs font-semibold text-slate-500 mb-1">{t('invitedListLabel')}</div>
                 <div className="max-h-40 overflow-y-auto border border-slate-200 rounded divide-y divide-slate-100">
                   {inviteList.length === 0 ? (
-                    <div className="text-xs text-slate-400 italic p-3">尚未邀請任何人</div>
+                    <div className="text-xs text-slate-400 italic p-3">{t('noInvites')}</div>
                   ) : (
                     inviteList.map((email) => (
                       <div key={email} className="flex items-center justify-between px-3 py-2 text-sm text-slate-700">
@@ -1001,7 +1106,7 @@ export default function LikeExcel() {
                           onClick={() => revokeInvite(email)}
                           className="text-xs text-red-600 hover:text-red-800 font-semibold ml-2 shrink-0"
                         >
-                          移除
+                          {t('remove')}
                         </button>
                       </div>
                     ))
@@ -1013,7 +1118,7 @@ export default function LikeExcel() {
                     onClick={() => setShowInviteModal(false)}
                     className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors"
                   >
-                    關閉
+                    {t('close')}
                   </button>
                 </div>
               </div>
@@ -1024,19 +1129,19 @@ export default function LikeExcel() {
           {showReasonDialog && (
             <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-50">
               <div className="bg-white rounded-lg shadow-xl p-6 w-96 max-w-[90vw]">
-                <h3 className="text-lg font-bold text-slate-800 mb-2">Cell Modification</h3>
+                <h3 className="text-lg font-bold text-slate-800 mb-2">{t('cellModTitle')}</h3>
                 <div className="text-sm text-slate-600 mb-4">
-                  <p><span className="font-medium">Cell:</span> {pendingCellChange?.address}</p>
-                  <p><span className="font-medium">Old Value:</span> {pendingCellChange?.oldValue ?? '(empty)'}</p>
-                  <p><span className="font-medium">New Value:</span> {pendingCellChange?.newValue ?? '(empty)'}</p>
+                  <p><span className="font-medium">{t('cellLabel')}</span> {pendingCellChange?.address}</p>
+                  <p><span className="font-medium">{t('oldValueLabel')}</span> {pendingCellChange?.oldValue ?? t('emptyValue')}</p>
+                  <p><span className="font-medium">{t('newValueLabel')}</span> {pendingCellChange?.newValue ?? t('emptyValue')}</p>
                 </div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Reason for change:
+                  {t('reasonLabel')}
                 </label>
                 <textarea
                   value={changeReason}
                   onChange={(e) => setChangeReason(e.target.value)}
-                  placeholder="Enter the reason for this change..."
+                  placeholder={t('reasonPlaceholder')}
                   className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
                   rows={3}
                   autoFocus
@@ -1046,13 +1151,13 @@ export default function LikeExcel() {
                     onClick={handleReasonCancel}
                     className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors"
                   >
-                    Skip
+                    {t('skip')}
                   </button>
                   <button
                     onClick={handleReasonSubmit}
                     className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded transition-colors"
                   >
-                    Submit
+                    {t('submit')}
                   </button>
                 </div>
               </div>

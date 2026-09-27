@@ -1,0 +1,43 @@
+import { defineDict } from '../lang';
+
+export default defineDict({
+  en: {
+    logout: 'Logout',
+    dashboard: 'Dashboard',
+    newForm: 'New Form',
+    likeExcel: 'Like Excel',
+    forms: 'Forms',
+    likeExcelList: 'Like Excel List',
+    dbConsole: 'DB Console',
+    setup: 'Setup',
+    excelMappingSetup: 'Excel Mapping Setup',
+    report: 'Report',
+    forecastChange: 'Forecast Change',
+  },
+  ja: {
+    logout: 'ログアウト',
+    dashboard: 'ダッシュボード',
+    newForm: '新規フォーム',
+    likeExcel: 'Like Excel',
+    forms: 'フォーム',
+    likeExcelList: 'Like Excel 一覧',
+    dbConsole: 'DB コンソール',
+    setup: '設定',
+    excelMappingSetup: 'Excel マッピング設定',
+    report: 'レポート',
+    forecastChange: 'フォーキャスト変動',
+  },
+  'zh-TW': {
+    logout: '登出',
+    dashboard: '儀表板',
+    newForm: '新表單',
+    likeExcel: 'Like Excel',
+    forms: '表單',
+    likeExcelList: 'Like Excel 清單',
+    dbConsole: 'DB 主控台',
+    setup: '設定',
+    excelMappingSetup: 'Excel 對應設定',
+    report: '報表',
+    forecastChange: '預測變動',
+  },
+});

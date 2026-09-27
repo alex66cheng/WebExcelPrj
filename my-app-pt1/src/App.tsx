@@ -7,6 +7,7 @@ import { GOOGLE_CLIENT_ID } from './config/googleAuth';
 import Layout from './components/Layout';
 import Home from './pages/Home';
 import Login from './pages/Login';
+import Docs from './pages/Docs';
 
 // Everything behind login is lazy-loaded so the landing page doesn't have to
 // download Syncfusion / Yjs / recharts before it can render.
@@ -20,6 +21,7 @@ const ExcelMappingSetup = lazy(() => import('./pages/ExcelMappingSetup'));
 const LikeExcelList = lazy(() => import('./pages/ExcelList'));
 const DailyForecastChangePage = lazy(() => import('./pages/DailyForecastChangePage'));
 const DbConsole = lazy(() => import('./pages/DbConsole'));
+const FileRevisions = lazy(() => import('./pages/FileRevisions'));
 
 const pageFallback = <div className="p-6 text-gray-500">Loading…</div>;
 
@@ -32,6 +34,7 @@ export default function App() {
           {/* 1. MOVE HOME HERE - Outside the Layout */}
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/docs" element={<Docs />} />
 
           {/* 2. ALL OTHER PAGES - Require a signed-in user */}
           <Route element={<ProtectedRoute />}>
@@ -49,6 +52,7 @@ export default function App() {
               <Route path="excel-mapping-setup" element={<ExcelMappingSetup />}/>
               <Route path="like-excel-list" element={<LikeExcelList />}/>
               <Route path="db-console" element={<DbConsole />}/>
+              <Route path="file-revisions" element={<FileRevisions />}/>
 
               {/* 📊 新增：Report > Forecast Change */}
               <Route path="report/forecast-change" element={<DailyForecastChangePage />}/>

@@ -1,3 +1,5 @@
+import { getCurrentLang } from '../i18n/lang';
+
 // Derived from the browser's own location so the app keeps working whether it's
 // opened via localhost, a LAN IP, a public IP, or the public domain — without
 // needing env vars. When the page is loaded over HTTPS (i.e. via the Caddy
@@ -34,5 +36,7 @@ export function apiFetch(path: string, options: RequestInit = {}): Promise<Respo
   const token = getAuthToken();
   const headers = new Headers(options.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
+  // Lets the backend answer with messages in the UI language (see WebSideAPI/i18n.js)
+  if (!headers.has('Accept-Language')) headers.set('Accept-Language', getCurrentLang());
   return fetch(`${API_BASE}${path}`, { ...options, headers });
 }

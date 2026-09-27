@@ -14,10 +14,14 @@
 # (see setup commands provided separately).
 
 www.mygwsite.com {
+	encode zstd gzip
 	reverse_proxy 103.200.219.246:5173
 }
 
+# encode: the API sends uncompressed JSON (opening a large .xlsm in the file pool
+# returned tens of MB); zstd/gzip shrinks it ~100x. WebSocket upgrades pass through untouched.
 www.mygwsite.com:3443 {
+	encode zstd gzip
 	reverse_proxy 103.200.219.246:3000
 }
 

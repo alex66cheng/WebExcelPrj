@@ -2,6 +2,9 @@
 import { useState } from 'react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
+import LanguageSwitcher from './LanguageSwitcher';
+import { useT } from '../i18n/useI18n';
+import dict from '../i18n/locales/layout';
 
 export default function Layout() {
   // 控制各分類的收摺狀態
@@ -11,6 +14,7 @@ export default function Layout() {
   const [isReportOpen, setIsReportOpen] = useState(true);
 
   const { user, logout } = useAuth();
+  const t = useT(dict);
   const navigate = useNavigate();
 
   const handleLogout = () => {
@@ -32,15 +36,16 @@ export default function Layout() {
                 onClick={handleLogout}
                 className="text-xs text-slate-400 hover:text-white shrink-0"
               >
-                Logout
+                {t('logout')}
               </button>
             </div>
           )}
+          <LanguageSwitcher className="bg-slate-800 border-slate-700 text-slate-300 self-start" />
         </div>
 
         <nav className="flex-1 p-4 flex flex-col gap-1 overflow-y-auto">
           <NavLink to="/dashboard" className={({ isActive }) => `p-3 rounded text-sm block ${isActive ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
-            Dashboard
+            {t('dashboard')}
           </NavLink>
 
           {/* NEW FORM 分類 */}
@@ -49,14 +54,14 @@ export default function Layout() {
               onClick={() => setIsNewFormOpen(!isNewFormOpen)}
               className="w-full flex justify-between items-center p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hover:text-white transition-colors"
             >
-              New Form
+              {t('newForm')}
               <span>{isNewFormOpen ? '▼' : '▶'}</span>
             </button>
             
             {isNewFormOpen && (
               <div className="flex flex-col gap-1">
                 <NavLink to="/like-excel" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  Like Excel
+                  {t('likeExcel')}
                 </NavLink>
               </div>
             )}
@@ -68,17 +73,17 @@ export default function Layout() {
               onClick={() => setIsFormsOpen(!isFormsOpen)}
               className="w-full flex justify-between items-center p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hover:text-white transition-colors"
             >
-              Forms
+              {t('forms')}
               <span>{isFormsOpen ? '▼' : '▶'}</span>
             </button>
 
             {isFormsOpen && (
               <div className="flex flex-col gap-1">
                 <NavLink to="/like-excel-list" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  Like Excel List
+                  {t('likeExcelList')}
                 </NavLink>
                 <NavLink to="/db-console" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  DB Console
+                  {t('dbConsole')}
                 </NavLink>
               </div>
             )}
@@ -90,14 +95,14 @@ export default function Layout() {
               onClick={() => setIsSetupOpen(!isSetupOpen)}
               className="w-full flex justify-between items-center p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hover:text-white transition-colors"
             >
-              Setup
+              {t('setup')}
               <span>{isSetupOpen ? '▼' : '▶'}</span>
             </button>
 
             {isSetupOpen && (
               <div className="flex flex-col gap-1">
                 <NavLink to="/excel-mapping-setup" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  Excel Mapping Setup
+                  {t('excelMappingSetup')}
                 </NavLink>
               </div>
             )}
@@ -109,14 +114,14 @@ export default function Layout() {
               onClick={() => setIsReportOpen(!isReportOpen)}
               className="w-full flex justify-between items-center p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hover:text-white transition-colors"
             >
-              Report
+              {t('report')}
               <span>{isReportOpen ? '▼' : '▶'}</span>
             </button>
 
             {isReportOpen && (
               <div className="flex flex-col gap-1">
                 <NavLink to="/report/forecast-change" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  Forecast Change
+                  {t('forecastChange')}
                 </NavLink>
               </div>
             )}

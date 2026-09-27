@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../config/apiBase';
 import { isDeadlinePassed, formatDeadline, toLocalInputValue } from '../utils/editDeadline';
+import { useT } from '../i18n/useI18n';
+import dict from '../i18n/locales/editDeadline';
 
 // ⏰ 檔案池檔案的「編輯期限」設定（僅擁有者使用）：超過期限後受邀的共同編輯者只能檢視，
 //    擁有者本人不受限制。放在兩個「邀請共同編輯」對話框裡共用（檔案池清單、線上編輯器）。
@@ -14,6 +16,7 @@ interface Props {
 }
 
 export default function EditDeadlineControl({ fileName, editDeadline, onSaved, onError }: Props) {
+  const t = useT(dict);
   const [value, setValue] = useState(toLocalInputValue(editDeadline));
   const [saving, setSaving] = useState(false);
 
@@ -29,7 +32,7 @@ export default function EditDeadlineControl({ fileName, editDeadline, onSaved, o
     })
       .then(async (res) => {
         const data = await res.json();
-        if (!res.ok || !data.success) throw new Error(data.message || '設定編輯期限失敗');
+        if (!res.ok || !data.success) throw new Error(data.message || t('errSave'));
         onSaved(data.editDeadline || null);
       })
       .catch(err => onError?.((err as Error).message))
@@ -40,7 +43,7 @@ export default function EditDeadlineControl({ fileName, editDeadline, onSaved, o
 
   return (
     <div className="mb-4">
-      <label className="block text-sm font-medium text-slate-700 mb-1">⏰ 編輯期限：</label>
+      <label className="block text-sm font-medium text-slate-700 mb-1">{t('label')}</label>
       <div className="flex gap-2">
         <input
           type="datetime-local"
@@ -53,7 +56,7 @@ export default function EditDeadlineControl({ fileName, editDeadline, onSaved, o
           disabled={saving || !value || value === toLocalInputValue(editDeadline)}
           className="px-3 py-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 rounded transition-colors disabled:opacity-50"
         >
-          設定
+          {t('set')}
         </button>
         {editDeadline && (
           <button
@@ -61,16 +64,16 @@ export default function EditDeadlineControl({ fileName, editDeadline, onSaved, o
             disabled={saving}
             className="px-3 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded transition-colors disabled:opacity-50"
           >
-            清除
+            {t('clear')}
           </button>
         )}
       </div>
       <p className={`text-xs mt-1 ${expired ? 'text-red-600' : 'text-slate-500'}`}>
         {!editDeadline
-          ? '未設定期限：共同編輯者可隨時編輯。'
+          ? t('statusNone')
           : expired
-            ? `已於 ${formatDeadline(editDeadline)} 到期，共同編輯者目前為唯讀（你本人仍可編輯）。`
-            : `共同編輯者可編輯至 ${formatDeadline(editDeadline)}，之後變為唯讀（你本人不受限制）。`}
+            ? t('statusExpired', { deadline: formatDeadline(editDeadline) })
+            : t('statusActive', { deadline: formatDeadline(editDeadline) })}
       </p>
     </div>
   );

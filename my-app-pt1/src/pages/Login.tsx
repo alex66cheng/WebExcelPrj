@@ -3,10 +3,14 @@ import { useNavigate, Navigate } from 'react-router-dom';
 import { useGoogleLogin } from '@react-oauth/google';
 import { apiFetch } from '../config/apiBase';
 import { useAuth } from '../context/useAuth';
+import LanguageSwitcher from '../components/LanguageSwitcher';
+import { useT } from '../i18n/useI18n';
+import dict from '../i18n/locales/login';
 
 export default function Login() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
+  const t = useT(dict);
   const [error, setError] = useState<string | null>(null);
 
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -32,15 +36,15 @@ export default function Login() {
         });
         const data = await res.json();
         if (!res.ok || !data.success) {
-          throw new Error(data.message || '登入失敗');
+          throw new Error(data.message || t('loginFailed'));
         }
         login(data.token, data.user);
         navigate('/dashboard', { replace: true });
       } catch (err) {
-        setError(err instanceof Error ? err.message : '登入失敗');
+        setError(err instanceof Error ? err.message : t('loginFailed'));
       }
     },
-    onError: () => setError('Google 登入失敗，請再試一次'),
+    onError: () => setError(t('googleFailed')),
   });
 
   if (user) return <Navigate to="/dashboard" replace />;
@@ -59,12 +63,12 @@ export default function Login() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        throw new Error(data.message || (mode === 'login' ? '登入失敗' : '註冊失敗'));
+        throw new Error(data.message || (mode === 'login' ? t('loginFailed') : t('registerFailed')));
       }
       login(data.token, data.user);
       navigate('/dashboard', { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : '發生錯誤');
+      setError(err instanceof Error ? err.message : t('genericError'));
     } finally {
       setSubmitting(false);
     }
@@ -72,17 +76,20 @@ export default function Login() {
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-slate-900">
+      <div className="absolute top-4 right-4">
+        <LanguageSwitcher className="bg-slate-800 border-slate-700 text-slate-300" />
+      </div>
       <div className="bg-white rounded-2xl shadow-xl p-10 flex flex-col items-center gap-6 w-full max-w-sm">
         <h1 className="text-2xl font-bold text-slate-800">EXCEL.API</h1>
         <p className="text-slate-500 text-sm text-center">
-          {mode === 'login' ? '請登入以繼續' : '建立新帳號'}
+          {mode === 'login' ? t('subtitleLogin') : t('subtitleRegister')}
         </p>
 
         <form onSubmit={handleEmailSubmit} className="w-full flex flex-col gap-3">
           {mode === 'register' && (
             <input
               type="text"
-              placeholder="姓名"
+              placeholder={t('namePlaceholder')}
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
@@ -91,7 +98,7 @@ export default function Login() {
           )}
           <input
             type="email"
-            placeholder="Email"
+            placeholder={t('emailPlaceholder')}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
@@ -99,7 +106,7 @@ export default function Login() {
           />
           <input
             type="password"
-            placeholder="密碼（至少 8 個字元）"
+            placeholder={t('passwordPlaceholder')}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
@@ -111,7 +118,7 @@ export default function Login() {
             disabled={submitting}
             className="bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white text-sm font-bold px-4 py-2 rounded transition-all"
           >
-            {submitting ? '處理中...' : mode === 'login' ? '登入' : '註冊'}
+            {submitting ? t('processing') : mode === 'login' ? t('login') : t('register')}
           </button>
         </form>
 
@@ -120,12 +127,12 @@ export default function Login() {
           onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(null); }}
           className="text-xs text-slate-500 hover:text-slate-800 -mt-2"
         >
-          {mode === 'login' ? '還沒有帳號？點此註冊' : '已經有帳號？點此登入'}
+          {mode === 'login' ? t('toRegister') : t('toLogin')}
         </button>
 
         <div className="w-full flex items-center gap-3 text-xs text-slate-400">
           <div className="flex-1 h-px bg-slate-200" />
-          或
+          {t('or')}
           <div className="flex-1 h-px bg-slate-200" />
         </div>
 
@@ -140,7 +147,7 @@ export default function Login() {
             <path fill="#FBBC05" d="M10.54 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.98-6.19z"/>
             <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.29-5.65c-2.02 1.35-4.61 2.16-8.6 2.16-6.26 0-11.57-4.22-13.46-10.42l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
           </svg>
-          Google 帳號登入
+          {t('googleLogin')}
         </button>
 
         {error && <p className="text-red-500 text-sm">{error}</p>}
