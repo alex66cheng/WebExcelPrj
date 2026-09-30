@@ -5,9 +5,6 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 
-// Shared secret with WebSideAPI/index.js's JWT_SECRET — both sides must use the
-// exact same string so Node can verify the token this service signs.
-const string JwtSharedSecret = "webexcelprj-enterprise-ad-jwt-secret-change-me";
 
 // Looks up the signed-in user's AD email ('mail' attribute) and display name.
 // WebSideAPI keys the Excel file pool, invites, edit deadlines and per-user
@@ -42,9 +39,9 @@ const string JwtSharedSecret = "webexcelprj-enterprise-ad-jwt-secret-change-me";
     return (email.Trim().ToLowerInvariant(), displayName);
 }
 
-string GenerateAdToken(string domain, string username, string email, string displayName)
+string GenerateAdToken(string jwtSharedSecret, string domain, string username, string email, string displayName)
 {
-    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSharedSecret));
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSharedSecret));
     var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
     var token = new JwtSecurityToken(
         claims: new[]
@@ -61,6 +58,14 @@ string GenerateAdToken(string domain, string username, string email, string disp
 }
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Shared secret with WebSideAPI/index.js's JWT_SECRET — both sides must use the
+// exact same string so Node can verify the token this service signs. The IIS
+// deployment writes it to appsettings.Production.json (see
+// deploy/iis/Deploy-Enterprise.ps1); the literal is only the dev fallback.
+var jwtSharedSecret = builder.Configuration["Jwt:SharedSecret"] is { Length: > 0 } configured
+    ? configured
+    : "webexcelprj-enterprise-ad-jwt-secret-change-me";
 
 // Add CORS - Allow credentials for Windows Auth
 builder.Services.AddCors(options =>
@@ -131,7 +136,7 @@ app.MapGet("/api/findAD", (HttpContext context) =>
             email = email,
             displayName = displayName,
             authenticationType = identity.AuthenticationType,
-            token = GenerateAdToken(domain, username, email, displayName)
+            token = GenerateAdToken(jwtSharedSecret, domain, username, email, displayName)
         });
     }
 

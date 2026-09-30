@@ -1,7 +1,12 @@
-// Derived from the browser's own location so the app keeps working whether it's
-// opened via localhost, a LAN IP, or a public IP — without needing env vars.
-export const API_BASE = `http://${window.location.hostname}:3000`;
-export const WS_BASE = `ws://${window.location.hostname}:3000`;
+import { getCurrentLang } from '../i18n/lang';
+
+// Enterprise build: everything is same-origin. In production IIS serves the
+// built frontend and reverse-proxies /api/* and the /excel-room-* WebSockets to
+// WebSideAPI on localhost:3000 (see deploy/iis/web.config); in development the
+// Vite dev server does the same proxying (see vite.config.ts). So the page's own
+// origin works over http or https, on any hostname, without env vars.
+export const API_BASE = window.location.origin;
+export const WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
 const TOKEN_STORAGE_KEY = 'webexcelprj_auth_token';
 
@@ -28,5 +33,7 @@ export function apiFetch(path: string, options: RequestInit = {}): Promise<Respo
   const token = getAuthToken();
   const headers = new Headers(options.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
+  // Lets the backend answer with messages in the UI language (see WebSideAPI/i18n.js)
+  if (!headers.has('Accept-Language')) headers.set('Accept-Language', getCurrentLang());
   return fetch(`${API_BASE}${path}`, { ...options, headers });
 }

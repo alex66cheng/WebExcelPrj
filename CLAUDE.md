@@ -11,6 +11,20 @@ This is not a single app — it's two independently-run projects that talk to ea
 
 Both must be running simultaneously for the app to function: the frontend hardcodes `http://localhost:3000` / `ws://localhost:3000` as the API base everywhere (no env vars, no `.env` files, no `import.meta.env` usage anywhere in the codebase — API URLs and DB credentials are literal strings in source).
 
+## `enterprise` branch: Windows Server + IIS build
+
+This branch is the enterprise variant of `cloud`. Login is Windows AD, handled by
+`ADAuthAPI/` (C# .NET 8 under IIS with Windows Authentication, which signs a JWT that
+WebSideAPI verifies with a shared secret). There's no Google or email/password login,
+and no `Login.tsx`. It deploys as a single IIS site: static `dist/`, `/api` and
+`/excel-room-*` reverse-proxied via ARR to Node on `127.0.0.1:3000` (NSSM service),
+`/adauth` as an IIS sub-application. See `deploy/iis/README.md` and
+`Deploy-Enterprise.ps1`. The frontend therefore uses same-origin URLs
+(`config/apiBase.ts`, `config/adAuth.ts`), and `vite.config.ts` proxies the same paths
+in dev. The shared secret comes from `JWT_SECRET` (Node) / `Jwt:SharedSecret`
+(ADAuthAPI); the hardcoded literal is only a dev fallback. When merging `cloud` into
+this branch, keep the AD auth pieces and drop the Google/email-login routes and pages.
+
 ## Commands
 
 Frontend (`my-app-pt1/`):

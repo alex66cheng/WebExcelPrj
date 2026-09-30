@@ -1,5 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { apiFetch } from '../config/apiBase';
+import { useT } from '../i18n/useI18n';
+import dict from '../i18n/locales/excelMappingSetup';
+import { listTopLevelFunctions, listMacroInputs } from '../utils/macroFunctions';
+import { useMacroInputDialog } from '../components/MacroInputDialog';
 
 // ==========================================
 // 1. TypeScript Interfaces & Definitions
@@ -38,20 +42,38 @@ const AVAILABLE_DATA_TYPES = [
   { value: 'float', label: 'float' },
 ];
 
-const DEFAULT_MACRO_TEMPLATE = `// ⚡ 步驟 5 自訂 JavaScript 巨集處理引擎
-// 您可以直接使用 'rows' 陣列（代表 Syncfusion 工作表的橫列數據）進行資料清洗或動態重算。
+const DEFAULT_MACRO_TEMPLATE = '';
 
-rows.forEach(row => {
-  if (!row || !row.cells) return;
-  
-  row.cells.forEach(cell => {
-    if (cell && typeof cell.value === 'number' && cell.value < 0) {
-      cell.value = 0;
-    }
+interface MacroLogLine {
+  level: 'log' | 'info' | 'warn' | 'error' | 'system' | 'success';
+  text: string;
+}
+
+const MACRO_LOG_COLORS: Record<MacroLogLine['level'], string> = {
+  log: 'text-slate-200',
+  info: 'text-sky-300',
+  warn: 'text-amber-300',
+  error: 'text-red-400',
+  system: 'text-slate-500',
+  success: 'text-emerald-400',
+};
+
+// 依步驟 3/4 的欄位對應產生試跑用的範例 rows（與後端 runUnpivotImport 產生的扁平紀錄同形）
+function buildSampleRows(rowHeaders: RowHeaderMapping[], timeline: { dbYearField: string; dbItemField: string; dbValueField: string }) {
+  const fixed = rowHeaders.map(h => h.dbFieldName.trim()).filter(Boolean);
+  const yearField = timeline.dbYearField.trim() || 'Year';
+  const itemField = timeline.dbItemField.trim() || 'Item';
+  const valueField = timeline.dbValueField.trim() || 'Value';
+  const values = [120, -5, null];
+  return values.map((v, i) => {
+    const row: Record<string, unknown> = {};
+    (fixed.length ? fixed : ['Field1']).forEach(f => { row[f] = `${f}_${i + 1}`; });
+    row[yearField] = String(new Date().getFullYear());
+    row[itemField] = 'Qty';
+    row[valueField] = v;
+    return row;
   });
-});
-
-console.log("⚡ 巨集執行完畢");`;
+}
 
 // 範本識別碼改為系統自動產生，不再開放使用者手動輸入/修改
 function generateTemplateCode(): string {
@@ -61,6 +83,7 @@ function generateTemplateCode(): string {
 }
 
 export const ExcelMappingSetup: React.FC = () => {
+  const t = useT(dict);
   const [dbTemplates, setDbTemplates] = useState<any[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState<boolean>(true);
   const [selectedTemplateCode, setSelectedTemplateCode] = useState<string>('NEW');
@@ -111,6 +134,16 @@ export const ExcelMappingSetup: React.FC = () => {
   const [skipHeaders, setSkipHeaders] = useState<string[]>([]);
   const [newSkipInput, setNewSkipInput] = useState('');
   const [macroScript, setMacroScript] = useState<string>(DEFAULT_MACRO_TEMPLATE);
+  const [macroLogs, setMacroLogs] = useState<MacroLogLine[]>([]);
+  const [macroRunning, setMacroRunning] = useState(false);
+  const [macroEntry, setMacroEntry] = useState('');
+  const { askInputs, dialog: macroInputDialog } = useMacroInputDialog();
+  const macroFunctions = useMemo(() => listTopLevelFunctions(macroScript), [macroScript]);
+  // 選取的函式被改名或刪除時，自動退回「執行整份腳本」
+  const activeMacroEntry = macroFunctions.includes(macroEntry) ? macroEntry : '';
+  const macroGutterRef = useRef<HTMLDivElement>(null);
+  // 儲存後就地更新 dbTemplates 時，略過下一次「切換範本 → 重新套用欄位」的同步，避免把畫面上剛存的內容又蓋掉
+  const skipNextTemplateSyncRef = useRef(false);
 
   // 初始掛載：從後端取得清單
   useEffect(() => {
@@ -183,6 +216,10 @@ export const ExcelMappingSetup: React.FC = () => {
 
  // 副作用：切換範本時自動載入資料庫中的欄位設定與 filename
 useEffect(() => {
+  if (skipNextTemplateSyncRef.current) {
+    skipNextTemplateSyncRef.current = false;
+    return;
+  }
   setTableStatus(null); 
   if (selectedTemplateCode === 'NEW') {
     setTemplateCode(generateTemplateCode());
@@ -238,7 +275,7 @@ setTimeline({
   dbValueField: targetObj.l3Settings?.dbValueField || '',
 });
       
-      setMacroScript(DEFAULT_MACRO_TEMPLATE);
+      setMacroScript(targetObj.macroScript ?? DEFAULT_MACRO_TEMPLATE);
 
       if (targetObj.dbname && targetObj.dbFile) {
         fetchTableColumns(targetObj.dbname, targetObj.dbFile);
@@ -249,7 +286,7 @@ setTimeline({
 
   const handleCreateDbFile = async () => {
     if (!newDbFileName.trim()) {
-      alert('請輸入要建立的資料庫檔名！');
+      alert(t('enterDbFileName'));
       return;
     }
     setCreatingDbFile(true);
@@ -266,10 +303,10 @@ setTimeline({
         setNewDbFileName('');
         refreshDbFiles();
       } else {
-        alert(`❌ 建立失敗: ${result.message}`);
+        alert(t('createFailed', { message: result.message }));
       }
     } catch (error: any) {
-      alert(`❌ 無法連線至伺服器進行建立: ${error.message}`);
+      alert(t('createConnectFailed', { message: error.message }));
     } finally {
       setCreatingDbFile(false);
     }
@@ -297,11 +334,11 @@ setTimeline({
 
   const handleCheckTable = async () => {
     if (!targetTable.trim()) {
-      setTableStatus({ type: 'error', text: '❌ 請先輸入目標資料庫 Table Name' });
+      setTableStatus({ type: 'error', text: t('enterTableName') });
       return;
     }
     if (!dbFile) {
-      setTableStatus({ type: 'error', text: '❌ 請先建立或選擇本機 SQLite 資料庫檔案' });
+      setTableStatus({ type: 'error', text: t('selectDbFileFirst') });
       return;
     }
     setCheckingTable(true);
@@ -320,14 +357,14 @@ setTimeline({
           setTableStatus({ type: 'success', text: `🟢 ${result.message}` });
           fetchTableColumns(targetTable);
         } else {
-          setTableStatus({ type: 'missing', text: `⚠️ 資料表 [${targetTable}] 目前不存在於本機資料庫。` });
+          setTableStatus({ type: 'missing', text: t('tableMissing', { table: targetTable }) });
           setDbFields([]);
         }
       } else {
-        setTableStatus({ type: 'error', text: `❌ 錯誤: ${result.message}` });
+        setTableStatus({ type: 'error', text: t('errorPrefix', { message: result.message }) });
       }
     } catch (error: any) {
-      setTableStatus({ type: 'error', text: `❌ 無法連線至後端: ${error.message}` });
+      setTableStatus({ type: 'error', text: t('backendConnectFailed', { message: error.message }) });
     } finally {
       setCheckingTable(false);
     }
@@ -366,11 +403,11 @@ setTimeline({
 
   const handleExecuteCreateTable = async () => {
     if (previewFields.some(f => !f.name.trim())) {
-      alert('請確認所有「資料行名稱」皆已填寫！');
+      alert(t('fillAllColumnNames'));
       return;
     }
     if (!dbFile) {
-      alert('請先建立或選擇本機 SQLite 資料庫檔案！');
+      alert(t('selectDbFileFirstAlert'));
       return;
     }
 
@@ -393,18 +430,93 @@ setTimeline({
         setTableStatus({ type: 'success', text: result.message });
         fetchTableColumns(targetTable);
       } else {
-        setTableStatus({ type: 'error', text: `❌ 建表失敗: ${result.message}` });
+        setTableStatus({ type: 'error', text: t('createTableFailed', { message: result.message }) });
       }
     } catch (error: any) {
-      setTableStatus({ type: 'error', text: `❌ 連線失敗: ${error.message}` });
+      setTableStatus({ type: 'error', text: t('connectFailed', { message: error.message }) });
     } finally {
       setCheckingTable(false);
     }
   };
 
+  // 🧪 步驟 5：在後端 vm 沙盒試跑巨集（與實際匯入同一個執行環境），結果顯示在右側除錯主控台
+  // saveToFile：試跑成功後把 sheet.set() 改過的儲存格寫回步驟 1 選的檔案池原檔（不寫入資料庫）
+  const handleRunMacro = async (saveToFile = false) => {
+    if (macroRunning) return;
+    if (saveToFile && !window.confirm(t('confirmRunSaveFile', { file: filenameField }))) return;
+    // 腳本以 // @input 宣告的值先跳視窗詢問，按取消就不執行
+    const inputs = await askInputs(listMacroInputs(macroScript, activeMacroEntry), activeMacroEntry ? `${activeMacroEntry}()` : t('runWholeScript'));
+    if (!inputs) return;
+    const sampleRows = buildSampleRows(rowHeaders, timeline);
+    setMacroRunning(true);
+    // 步驟 1 選了檔案池檔案時，後端改用該檔案的實際工作表（sheet 可用、rows 為實際展開結果）
+    const source = filenameField || '';
+    setMacroLogs([{
+      level: 'system',
+      text: source
+        ? (activeMacroEntry
+          ? t('runFunctionStartedFile', { name: activeMacroEntry, file: source })
+          : t('runStartedFile', { file: source }))
+        : (activeMacroEntry
+          ? t('runFunctionStarted', { name: activeMacroEntry, count: sampleRows.length })
+          : t('runStarted', { count: sampleRows.length }))
+    }]);
+    try {
+      const response = await apiFetch('/api/spreadsheet/run-macro', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          script: macroScript, rows: sampleRows, entry: activeMacroEntry, inputs,
+          fileName: source, sheetMode, sheetValue, dataStartRow, rowHeaders, timeline, skipHeaders, saveToFile, dbFile
+        })
+      });
+      const result = await response.json();
+      const lines: MacroLogLine[] = [...(result.logs || [])];
+      if (result.success) {
+        if (result.returnValue !== undefined) {
+          lines.push({ level: 'system', text: t('returnValue') }, { level: 'log', text: result.returnValue });
+        }
+        lines.push({ level: 'system', text: t('rowCountAfterRun', { count: result.rowCount ?? 0 }) });
+        if (result.savedToFile) {
+          lines.push({ level: 'success', text: t('savedToFile', { file: result.savedToFile, cells: (result.changedCells || []).join(', ') }) });
+        } else if (saveToFile) {
+          lines.push({ level: 'warn', text: t('noCellChanges') });
+        } else if (result.changedCells?.length) {
+          // ▶ 執行只是試跑：提醒 sheet.set() 的修改沒有存進檔案
+          lines.push({ level: 'warn', text: t('testRunNotSaved', { cells: result.changedCells.join(', ') }) });
+        }
+        lines.push({ level: 'success', text: t('runFinished', { ms: result.durationMs }) });
+      } else {
+        lines.push(
+          { level: 'error', text: result.error || result.message || 'Error' },
+          { level: 'error', text: t('runFailed', { ms: result.durationMs ?? 0 }) }
+        );
+      }
+      setMacroLogs(prev => [...prev, ...lines]);
+    } catch (err: any) {
+      setMacroLogs(prev => [...prev, { level: 'error', text: t('runNetworkError', { message: err.message }) }]);
+    } finally {
+      setMacroRunning(false);
+    }
+  };
+
+  const handleMacroKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      handleRunMacro();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      const el = e.currentTarget;
+      const { selectionStart, selectionEnd } = el;
+      const next = macroScript.slice(0, selectionStart) + '  ' + macroScript.slice(selectionEnd);
+      setMacroScript(next);
+      requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = selectionStart + 2; });
+    }
+  };
+
   const handleSaveConfig = async () => {
     if (!templateName.trim()) {
-      alert("❌ 請填寫範本顯示名稱！");
+      alert(t('enterTemplateName'));
       return;
     }
 
@@ -434,12 +546,40 @@ setTimeline({
       });
       const result = await response.json();
       if (response.ok && result.success) {
-        alert(`💾 範本配置與資料庫檔名設定已成功同步儲存！`);
+        // 同步本機範本清單（與 get-templates 回傳同形），之後切換回這個範本時才會看到剛存的內容（含步驟 5 巨集）
+        const savedEntry = {
+          ID: configPayload.templateCode,
+          name: configPayload.templateName,
+          dbname: configPayload.targetTable,
+          descriptionl: configPayload.description,
+          sheet: configPayload.sheetValue,
+          rowstart: configPayload.dataStartRow,
+          filename: configPayload.filename,
+          dbFile: configPayload.dbFile,
+          rowHeaders: configPayload.rowHeaders,
+          skipHeaders: configPayload.skipHeaders,
+          macroScript: configPayload.macroScript,
+          l3Settings: {
+            startCol: timeline.startColumn,
+            endCol: timeline.endColumn,
+            yearRow: timeline.yearRow,
+            itemRow: timeline.itemRow,
+            skipSpace: timeline.skipSpace,
+            dbYearField: timeline.dbYearField,
+            dbItemField: timeline.dbItemField,
+            dbValueField: timeline.dbValueField,
+          },
+        };
+        skipNextTemplateSyncRef.current = true;
+        setDbTemplates(prev => prev.some(t => String(t.ID) === savedEntry.ID)
+          ? prev.map(t => String(t.ID) === savedEntry.ID ? { ...t, ...savedEntry } : t)
+          : [...prev, savedEntry]);
+        alert(t('saveSuccess'));
       } else {
-        alert(`❌ 儲存失敗: ${result.message}`);
+        alert(t('saveFailed', { message: result.message }));
       }
     } catch (error: any) {
-      alert("❌ 無法連線至後端伺服器進行儲存");
+      alert(t('saveConnectFailed'));
     }
   };
 
@@ -447,55 +587,56 @@ setTimeline({
 
   return (
     <div className="w-full text-slate-800 p-2 max-w-7xl mx-auto font-sans bg-white">
+      {macroInputDialog}
       
       {/* Master Top Header with Combined Dropdown Selection */}
       <div className="mb-6 border-b border-gray-200 pb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Excel 匯入範本設定 (XLSX Template Setup)</h2>
-          <p className="text-sm text-gray-500 mt-1">本機 SQLite 專用整合介面</p>
+          <h2 className="text-2xl font-bold text-slate-900">{t('pageTitle')}</h2>
+          <p className="text-sm text-gray-500 mt-1">{t('pageSubtitle')}</p>
         </div>
         
         <div className="flex items-center gap-2 bg-slate-100 p-2 rounded-lg border border-slate-200">
-          <label className="text-sm font-bold text-slate-700 shrink-0">📂 選擇範本：</label>
+          <label className="text-sm font-bold text-slate-700 shrink-0">{t('selectTemplate')}</label>
           <select 
             value={selectedTemplateCode} 
             onChange={(e) => setSelectedTemplateCode(e.target.value)}
             disabled={loadingTemplates}
             className="p-1.5 bg-white border border-slate-300 rounded md:w-64 font-medium text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="NEW">➕ 建立全新設定範本</option>
+            <option value="NEW">{t('createNewTemplate')}</option>
             {dbTemplates.map(t => (
               <option key={t.ID} value={t.name}>
                 {t.ID} - {t.name} ({t.dbname})
               </option>
             ))}
           </select>
-          {loadingTemplates && <span className="text-xs text-slate-500">載入中...</span>}
+          {loadingTemplates && <span className="text-xs text-slate-500">{t('loading')}</span>}
         </div>
       </div>
 
       {/* 📋 目標資料庫環境設定：本機 SQLite 檔案 */}
       <div className="bg-amber-50/40 p-5 rounded-xl border border-amber-200 mb-6">
-        <label className="block text-sm font-bold text-amber-900 mb-3">⚡ 目標資料庫環境設定 (Local SQLite Target)</label>
-        <p className="text-[11px] text-amber-700 mb-3">請先建立（或選擇既有的）本機 SQLite 資料庫檔案（.db），再將此範本綁定到該檔案。</p>
+        <label className="block text-sm font-bold text-amber-900 mb-3">{t('dbTargetTitle')}</label>
+        <p className="text-[11px] text-amber-700 mb-3">{t('dbTargetHint')}</p>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <div className="md:col-span-2">
-            <label className="block text-xs font-semibold text-gray-600 mb-1">選擇既有的 .db 檔案</label>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">{t('selectExistingDb')}</label>
             <select
               value={dbFile}
               onChange={e => setDbFile(e.target.value)}
               disabled={loadingDbFiles}
               className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono text-sm"
             >
-              <option value="">-- 尚未綁定資料庫檔案 --</option>
+              <option value="">{t('noDbBound')}</option>
               {availableDbFiles.map(f => (
                 <option key={f} value={f}>{f}</option>
               ))}
             </select>
           </div>
           <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">新增資料庫檔名</label>
-            <input type="text" value={newDbFileName} onChange={e => setNewDbFileName(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono text-sm" placeholder="例如: epsidemodb.db" />
+            <label className="block text-xs font-semibold text-gray-600 mb-1">{t('newDbFileName')}</label>
+            <input type="text" value={newDbFileName} onChange={e => setNewDbFileName(e.target.value)} className="w-full p-2 border border-gray-300 rounded-md bg-white font-mono text-sm" placeholder={t('newDbFilePlaceholder')} />
           </div>
           <button
             type="button"
@@ -503,62 +644,62 @@ setTimeline({
             disabled={creatingDbFile}
             className="w-full py-2 px-4 bg-amber-600 text-white font-bold text-sm rounded-lg hover:bg-amber-700 transition-all shadow-sm disabled:opacity-50"
           >
-            {creatingDbFile ? '⏳ 建立中...' : '🗄️ 建立並綁定 .db 檔案'}
+            {creatingDbFile ? t('creating') : t('createAndBindDb')}
           </button>
         </div>
         {dbFile && (
-          <p className="text-xs text-amber-800 font-mono font-semibold mt-3">✅ 目前綁定的資料庫檔案：{dbFile}</p>
+          <p className="text-xs text-amber-800 font-mono font-semibold mt-3">{t('currentDbFile', { dbFile })}</p>
         )}
       </div>
 
       {/* 📋 步驟 1：定義範本基本資訊與動態資料庫檔名欄位 */}
       <div className="bg-blue-50/50 p-6 rounded-xl border border-blue-200 mb-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-blue-200 pb-3 mb-4">
-          <h3 className="text-lg font-bold text-blue-900 border-l-4 border-blue-600 pl-3">📋 步驟 1：定義範本基本資訊與檔名對應</h3>
+          <h3 className="text-lg font-bold text-blue-900 border-l-4 border-blue-600 pl-3">{t('step1Title')}</h3>
           {selectedTemplateCode !== 'NEW' && currentSelectedTemplateObj && (
             <div className="bg-white/80 border border-blue-200 px-3 py-1.5 rounded-lg text-xs flex flex-wrap items-center gap-x-4 gap-y-1 shadow-sm">
-              <span className="text-slate-500">目前選取狀態:</span>
+              <span className="text-slate-500">{t('currentSelection')}</span>
               <span className="font-mono font-bold text-blue-700">ID: {currentSelectedTemplateObj.ID}</span>
               <span className="text-slate-300">|</span>
-              <span className="font-semibold text-slate-800">名稱: {currentSelectedTemplateObj.name}</span>
+              <span className="font-semibold text-slate-800">{t('nameLabel', { name: currentSelectedTemplateObj.name })}</span>
               <span className="text-slate-300">|</span>
-              <span className="text-slate-600 truncate max-w-xs">描述: {currentSelectedTemplateObj.descriptionl || '(無)'}</span>
+              <span className="text-slate-600 truncate max-w-xs">{t('descriptionLabel', { description: currentSelectedTemplateObj.descriptionl || t('none') })}</span>
               <span className="text-slate-300">|</span>
-              <span className="font-mono text-indigo-700 font-semibold">檔名 (filename): {filenameField || '未設定檔名'}</span>
+              <span className="font-mono text-indigo-700 font-semibold">{t('filenameLabel', { filename: filenameField || t('filenameNotSet') })}</span>
             </div>
           )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1">範本識別碼 / ID（系統自動產生）</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">{t('templateIdLabel')}</label>
             <input
               type="text"
               value={templateCode}
               disabled
               readOnly
               className="w-full p-2 border border-gray-300 rounded-md bg-gray-100 font-mono uppercase cursor-not-allowed"
-              placeholder="系統自動產生"
+              placeholder={t('autoGenerated')}
             />
           </div>
           <div className="md:col-span-2">
-            <label className="block text-sm font-semibold text-gray-700 mb-1">範本顯示名稱 (name)</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">{t('templateNameLabel')}</label>
             <input 
               type="text" 
               value={templateName} 
               onChange={e => setTemplateName(e.target.value)} 
               className="w-full p-2 border border-gray-300 rounded-md bg-white focus:ring-2 focus:ring-blue-500" 
-              placeholder="輸入範本名稱"
+              placeholder={t('templateNamePlaceholder')}
             />
           </div>
           <div className="md:col-span-3">
-            <label className="block text-sm font-semibold text-gray-700 mb-1">範本功能描述 (descriptionl)</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">{t('templateDescLabel')}</label>
             <input 
               type="text" 
               value={description} 
               onChange={e => setDescription(e.target.value)} 
               className="w-full p-2 border border-gray-300 rounded-md bg-white" 
-              placeholder="輸入範本詳細描述"
+              placeholder={t('templateDescPlaceholder')}
             />
           </div>
         </div>
@@ -566,34 +707,34 @@ setTimeline({
         {/* 動態綁定資料庫 filename 欄位：從 Excel 檔案池選擇 */}
         <div className="bg-white/80 p-4 rounded-lg border border-blue-200 grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
           <div>
-            <label className="block text-xs font-bold text-blue-900 mb-1">📁 從 Excel 檔案池選擇</label>
+            <label className="block text-xs font-bold text-blue-900 mb-1">{t('pickFromPool')}</label>
             <select
               value={poolFiles.some(f => f.fileName === filenameField) ? filenameField : ''}
               onChange={e => setFilenameField(e.target.value)}
               disabled={loadingPoolFiles}
               className="w-full p-2 border border-blue-300 rounded-md bg-white text-sm"
             >
-              <option value="">-- 請選擇檔案池中的 Excel 檔案 --</option>
+              <option value="">{t('pickPoolFilePlaceholder')}</option>
               {poolFiles.map(f => (
                 <option key={f.fileName} value={f.fileName}>{f.displayName} ({f.fileName})</option>
               ))}
             </select>
             {!loadingPoolFiles && poolFiles.length === 0 && (
-              <p className="text-[11px] text-amber-600 mt-1">檔案池目前沒有檔案，請先至「Like Excel List」頁面上傳。</p>
+              <p className="text-[11px] text-amber-600 mt-1">{t('poolEmpty')}</p>
             )}
           </div>
 
           <div className="md:col-span-2">
-            <label className="block text-xs font-bold text-blue-900 mb-1">📂 資料庫對應檔名 (filename 欄位)</label>
+            <label className="block text-xs font-bold text-blue-900 mb-1">{t('dbFilenameLabel')}</label>
             <input
               type="text"
               value={filenameField}
               readOnly
               className="w-full p-2 border border-blue-300 rounded-md bg-slate-100 font-mono text-sm text-blue-900 font-semibold cursor-not-allowed"
-              placeholder="請於左側從檔案池選擇一個 Excel 檔案"
+              placeholder={t('dbFilenamePlaceholder')}
             />
             <p className="text-[11px] text-slate-500 mt-1">
-              * 此欄位直接對應資料庫中的 <code className="text-blue-700 font-bold">filename</code> 設定，由左側的檔案池選擇自動帶入。
+              {t('dbFilenameHintBefore')} <code className="text-blue-700 font-bold">filename</code> {t('dbFilenameHintAfter')}
             </p>
           </div>
         </div>
@@ -601,10 +742,10 @@ setTimeline({
 
       {/* 📋 步驟 2：工作表 (Worksheet) 與目標資料庫 */}
       <div className="bg-gray-50 p-6 rounded-xl border border-gray-200 mb-6">
-        <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-4">⚙️ 步驟 2：工作表 (Worksheet) 與目標資料庫</h3>
+        <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-4">{t('step2Title')}</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1">本機 SQLite Table Name (dbname)</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">{t('tableNameLabel')}</label>
             <div className="flex gap-2">
               <input 
                 type="text" 
@@ -619,7 +760,7 @@ setTimeline({
                 disabled={checkingTable}
                 className="px-4 py-2 text-sm font-bold rounded-md bg-slate-700 hover:bg-slate-800 text-white shadow-sm transition-all shrink-0 disabled:opacity-50"
               >
-                {checkingTable ? '⏳ 處理中...' : '🔍 檢查表格狀態'}
+                {checkingTable ? t('processing') : t('checkTable')}
               </button>
             </div>
 
@@ -632,21 +773,21 @@ setTimeline({
                 )}
                 {tableStatus.type === 'success' && (
                   <div className="p-3 rounded-lg text-xs font-semibold bg-green-50 text-green-800 border border-green-200">
-                    {tableStatus.text} <span className="block text-[11px] text-green-600 font-normal mt-0.5">已自動從實體資料庫連動同步 {dbFields.length} 個有效欄位。</span>
+                    {tableStatus.text} <span className="block text-[11px] text-green-600 font-normal mt-0.5">{t('columnsSynced', { count: dbFields.length })}</span>
                   </div>
                 )}
                 {tableStatus.type === 'missing' && (
                   <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 shadow-sm">
                     <p className="text-xs font-bold flex items-center gap-1">{tableStatus.text}</p>
                     <p className="text-[11px] text-amber-700 mt-1 mb-3">
-                      系統可以引導您開啟 SQL Server 視覺化建表視窗，自訂或修改欄位結構。
+                      {t('createTableHint')}
                     </p>
                     <button
                       type="button"
                       onClick={handleOpenCreateModal}
                       className="w-full py-2 px-3 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white rounded shadow transition-all flex items-center justify-center gap-1"
                     >
-                      🛠️ 開啟實體資料表結構設定視窗
+                      {t('openTableDesigner')}
                     </button>
                   </div>
                 )}
@@ -655,15 +796,15 @@ setTimeline({
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1">明細資料起始列 (rowstart)</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">{t('dataStartRow')}</label>
             <input type="number" min={1} value={dataStartRow} onChange={e => setDataStartRow(Number(e.target.value))} className="w-full p-2 border border-gray-300 rounded-md bg-white focus:ring-2 focus:ring-blue-500" />
           </div>
 
           <div className="md:col-span-2 border-t border-gray-200 pt-3 mt-1">
-            <label className="block text-sm font-semibold text-gray-700 mb-1">Excel 指定工作表 (sheet)</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">{t('sheetLabel')}</label>
             <div className="flex gap-6 my-2 text-sm">
-              <label className="inline-flex items-center cursor-pointer"><input type="radio" className="mr-2" checked={sheetMode === 'index'} onChange={() => { setSheetMode('index'); setSheetValue(1); }} /> 依分頁順序 (Index)</label>
-              <label className="inline-flex items-center cursor-pointer"><input type="radio" className="mr-2" checked={sheetMode === 'name'} onChange={() => { setSheetMode('name'); setSheetValue(''); }} /> 依分頁名稱 (Sheet Name)</label>
+              <label className="inline-flex items-center cursor-pointer"><input type="radio" className="mr-2" checked={sheetMode === 'index'} onChange={() => { setSheetMode('index'); setSheetValue(1); }} /> {t('byIndex')}</label>
+              <label className="inline-flex items-center cursor-pointer"><input type="radio" className="mr-2" checked={sheetMode === 'name'} onChange={() => { setSheetMode('name'); setSheetValue(''); }} /> {t('byName')}</label>
             </div>
             <input type={sheetMode === 'index' ? 'number' : 'text'} value={sheetValue} onChange={e => setSheetValue(e.target.value)} className="w-full md:w-1/2 p-2 border border-gray-300 rounded-md bg-white" />
           </div>
@@ -672,17 +813,17 @@ setTimeline({
 
       {/* 📋 步驟 3：固定維度欄位對應與 Regex 檢核 */}
       <div className="bg-gray-50 p-6 rounded-xl border border-gray-200 mb-6">
-        <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-2">📌 步驟 3：固定維度欄位對應與 Regex 檢核</h3>
+        <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-2">{t('step3Title')}</h3>
         <div className="overflow-x-auto">
           <table className="w-full mb-4 border-collapse text-left">
             <thead>
               <tr className="border-b-2 border-gray-300">
-                <th className="p-2 text-sm font-bold text-gray-600 w-24">Excel 欄位</th>
+                <th className="p-2 text-sm font-bold text-gray-600 w-24">{t('excelColumn')}</th>
                 <th className="p-2 text-center w-6">➡️</th>
-                <th className="p-2 text-sm font-bold text-gray-600 w-44">資料庫欄位 (Field)</th>
-                <th className="p-2 text-sm font-bold text-gray-600 w-36">進階設定</th>
-                <th className="p-2 text-sm font-bold text-gray-600 min-w-[450px]">⚙️ 正規表示式過濾條件與沙盒測試</th>
-                <th className="p-2 text-sm font-bold text-gray-600 w-16">操作</th>
+                <th className="p-2 text-sm font-bold text-gray-600 w-44">{t('dbField')}</th>
+                <th className="p-2 text-sm font-bold text-gray-600 w-36">{t('advanced')}</th>
+                <th className="p-2 text-sm font-bold text-gray-600 min-w-[450px]">{t('regexHeader')}</th>
+                <th className="p-2 text-sm font-bold text-gray-600 w-16">{t('actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -703,7 +844,7 @@ setTimeline({
                         value={row.dbFieldName}
                         onChange={e => handleUpdateRowHeader(row.id, 'dbFieldName', e.target.value)}
                         className="w-full p-1.5 border border-gray-300 rounded bg-white text-sm font-mono"
-                        placeholder="輸入資料庫欄位名稱"
+                        placeholder={t('dbFieldPlaceholder')}
                       />
                       <datalist id={`dbfield-options-${row.id}`}>
                         {dbFields.map(f => (<option key={f.name} value={f.name}>{f.type}</option>))}
@@ -711,41 +852,41 @@ setTimeline({
                     </td>
                     <td className="p-2">
                       <label className="inline-flex items-center text-xs text-gray-600 bg-white p-1.5 border border-gray-200 rounded w-full cursor-pointer select-none">
-                        <input type="checkbox" className="mr-1 text-blue-600" checked={row.isGrouped} onChange={e => handleUpdateRowHeader(row.id, 'isGrouped', e.target.checked)} /> 遇空向下沿用
+                        <input type="checkbox" className="mr-1 text-blue-600" checked={row.isGrouped} onChange={e => handleUpdateRowHeader(row.id, 'isGrouped', e.target.checked)} /> {t('fillDown')}
                       </label>
                     </td>
                     <td className="p-2">
                       <div className="flex flex-col gap-2 bg-slate-100 p-2 rounded border border-slate-200">
                         <div className="flex flex-wrap items-center gap-2">
                           <select value={row.filterType} onChange={e => handleUpdateRowHeader(row.id, 'filterType', e.target.value)} className="p-1 border text-xs bg-white rounded">
-                            <option value="none">🟢 不檢查 (全部允許)</option>
-                            <option value="not_empty">🚫 排除空值 (Not Empty)</option>
-                            <option value="numeric">🔢 限制純數字 (^[0-9]+$)</option>
-                            <option value="regex">🔍 符合 Regex 規則</option>
+                            <option value="none">{t('filterNone')}</option>
+                            <option value="not_empty">{t('filterNotEmpty')}</option>
+                            <option value="numeric">{t('filterNumeric')}</option>
+                            <option value="regex">{t('filterRegex')}</option>
                           </select>
 
                           {row.filterType === 'regex' && (
                             <input 
                               type="text" value={row.filterExpression} onChange={e => handleUpdateRowHeader(row.id, 'filterExpression', e.target.value)}
-                              className="flex-1 min-w-[180px] p-1 border rounded text-xs font-mono" placeholder="請輸入正規表示式"
+                              className="flex-1 min-w-[180px] p-1 border rounded text-xs font-mono" placeholder={t('regexPlaceholder')}
                             />
                           )}
                         </div>
 
                         {row.filterType === 'regex' && (
                           <div className="flex gap-2 items-center border-t border-dashed border-gray-300 pt-1.5 mt-0.5">
-                            <span className="text-[11px] font-bold text-gray-500 shrink-0">🧪 測試沙盒:</span>
+                            <span className="text-[11px] font-bold text-gray-500 shrink-0">{t('testSandbox')}</span>
                             <input 
                               type="text" value={testVal} onChange={e => setTestInputs({ ...testInputs, [row.id]: e.target.value })}
-                              className="flex-1 p-1 border text-xs bg-white rounded" placeholder="輸入資料進行匹配測試"
+                              className="flex-1 p-1 border text-xs bg-white rounded" placeholder={t('testPlaceholder')}
                             />
                             {!valid ? (
-                              <span className="text-[11px] font-semibold text-red-600 bg-red-50 border border-red-200 px-1.5 rounded">語法錯誤</span>
+                              <span className="text-[11px] font-semibold text-red-600 bg-red-50 border border-red-200 px-1.5 rounded">{t('syntaxError')}</span>
                             ) : testVal ? (
                               match ? (
-                                <span className="text-[11px] font-semibold text-green-700 bg-green-50 border border-green-200 px-1.5 rounded">🟢 通過 (Match)</span>
+                                <span className="text-[11px] font-semibold text-green-700 bg-green-50 border border-green-200 px-1.5 rounded">{t('matchPass')}</span>
                               ) : (
-                                <span className="text-[11px] font-semibold text-red-600 bg-red-50 border border-red-200 px-1.5 rounded">❌ 阻擋 (Mismatch)</span>
+                                <span className="text-[11px] font-semibold text-red-600 bg-red-50 border border-red-200 px-1.5 rounded">{t('matchBlock')}</span>
                               )
                             ) : null}
                           </div>
@@ -753,7 +894,7 @@ setTimeline({
                       </div>
                     </td>
                     <td className="p-2">
-                      <button type="button" onClick={() => handleRemoveRowHeader(row.id)} disabled={rowHeaders.length === 1} className="text-red-500 border border-red-200 bg-red-50 px-2 py-1.5 rounded text-xs disabled:opacity-50 w-full hover:bg-red-100 transition-all">刪除</button>
+                      <button type="button" onClick={() => handleRemoveRowHeader(row.id)} disabled={rowHeaders.length === 1} className="text-red-500 border border-red-200 bg-red-50 px-2 py-1.5 rounded text-xs disabled:opacity-50 w-full hover:bg-red-100 transition-all">{t('delete')}</button>
                     </td>
                   </tr>
                 );
@@ -761,17 +902,17 @@ setTimeline({
             </tbody>
           </table>
         </div>
-        <button type="button" onClick={handleAddRowHeader} className="px-4 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm font-medium hover:bg-gray-50 transition-all">+ 新增固定對應欄位</button>
+        <button type="button" onClick={handleAddRowHeader} className="px-4 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm font-medium hover:bg-gray-50 transition-all">{t('addFixedColumn')}</button>
       </div>
 
      {/* 📋 步驟 4：動態時間與項目軸設定 */}
 <div className="bg-gray-50 p-6 rounded-xl border border-gray-200 mb-6 font-sans">
-  <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-2">⚡ 步驟 4：動態時間與項目軸設定 (xlsx2dbsetL3)</h3>
-  <p className="text-xs text-gray-500 mb-4">設定矩陣範圍的起迄欄位、年份列、項目列以及空間跳過設定。</p>
+  <h3 className="text-lg font-bold text-slate-900 border-l-4 border-slate-500 pl-3 mb-2">{t('step4Title')}</h3>
+  <p className="text-xs text-gray-500 mb-4">{t('step4Hint')}</p>
 
   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
     <div>
-      <label className="block text-sm font-semibold text-gray-700 mb-1">矩陣起始欄位 (Start Column)</label>
+      <label className="block text-sm font-semibold text-gray-700 mb-1">{t('startColumn')}</label>
       <input 
         type="text" 
         value={timeline?.startColumn ?? ''} 
@@ -781,7 +922,7 @@ setTimeline({
       />
     </div>
     <div>
-      <label className="block text-sm font-semibold text-gray-700 mb-1">矩陣結束欄位 (End Column)</label>
+      <label className="block text-sm font-semibold text-gray-700 mb-1">{t('endColumn')}</label>
       <input 
         type="text" 
         value={timeline?.endColumn ?? ''} 
@@ -794,9 +935,9 @@ setTimeline({
 
   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-gray-200 pt-4 mb-4">
     <div className="text-sm">
-      <label className="block font-semibold text-gray-700 mb-2 text-xs">1. 年份設定軸 (Year Row)</label>
+      <label className="block font-semibold text-gray-700 mb-2 text-xs">{t('yearAxis')}</label>
       <div className="flex items-center gap-2">
-        <span>第</span>
+        {t('rowPrefix') && <span>{t('rowPrefix')}</span>}
         <input 
           type="number" 
           min={1} 
@@ -804,13 +945,13 @@ setTimeline({
           onChange={e => handleUpdateTimeline('yearRow', Number(e.target.value))} 
           className="w-16 p-1.5 border border-gray-300 rounded text-center bg-white font-mono text-slate-800" 
         />
-        <span>列</span>
+        {t('rowSuffix') && <span>{t('rowSuffix')}</span>}
       </div>
     </div>
     <div className="text-sm">
-      <label className="block font-semibold text-gray-700 mb-2 text-xs">2. 項目設定軸 (Item Row)</label>
+      <label className="block font-semibold text-gray-700 mb-2 text-xs">{t('itemAxis')}</label>
       <div className="flex items-center gap-2">
-        <span>第</span>
+        {t('rowPrefix') && <span>{t('rowPrefix')}</span>}
         <input 
           type="number" 
           min={1} 
@@ -818,14 +959,14 @@ setTimeline({
           onChange={e => handleUpdateTimeline('itemRow', Number(e.target.value))} 
           className="w-16 p-1.5 border border-gray-300 rounded text-center bg-white font-mono text-slate-800" 
         />
-        <span>列</span>
+        {t('rowSuffix') && <span>{t('rowSuffix')}</span>}
       </div>
     </div>
   </div>
 
   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-gray-200 pt-4 mb-4">
     <div>
-      <label className="block text-sm font-semibold text-gray-700 mb-1">年份對應資料庫欄位 (DB Year Field)</label>
+      <label className="block text-sm font-semibold text-gray-700 mb-1">{t('dbYearField')}</label>
       <input
         type="text"
         value={timeline?.dbYearField ?? ''}
@@ -835,7 +976,7 @@ setTimeline({
       />
     </div>
     <div>
-      <label className="block text-sm font-semibold text-gray-700 mb-1">項目對應資料庫欄位 (DB Item Field)</label>
+      <label className="block text-sm font-semibold text-gray-700 mb-1">{t('dbItemField')}</label>
       <input
         type="text"
         value={timeline?.dbItemField ?? ''}
@@ -845,7 +986,7 @@ setTimeline({
       />
     </div>
     <div>
-      <label className="block text-sm font-semibold text-gray-700 mb-1">數值對應資料庫欄位 (DB Value Field)</label>
+      <label className="block text-sm font-semibold text-gray-700 mb-1">{t('dbValueField')}</label>
       <input
         type="text"
         value={timeline?.dbValueField ?? ''}
@@ -857,7 +998,7 @@ setTimeline({
   </div>
 
   <div className="border-t border-gray-200 pt-4">
-    <label className="block text-xs font-semibold text-gray-700 mb-1">📐 空間跳過設定 (Skip Space)</label>
+    <label className="block text-xs font-semibold text-gray-700 mb-1">{t('skipSpace')}</label>
     <div className="flex items-center gap-2 max-w-xs">
       <input 
         type="number" 
@@ -867,7 +1008,7 @@ setTimeline({
         className="w-24 p-1.5 border border-gray-300 text-xs rounded bg-white font-mono text-slate-800 text-center" 
         placeholder="0" 
       />
-      <span className="text-xs text-gray-500">列/行間距或空白跳過設定值</span>
+      <span className="text-xs text-gray-500">{t('skipSpaceHint')}</span>
     </div>
   </div>
 </div>
@@ -876,7 +1017,7 @@ setTimeline({
       <div className="bg-slate-50 p-6 rounded-xl border border-slate-200 mb-6 shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-4">
           <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-            <span className="text-amber-500">⚙️</span> 步驟 5：自訂 JavaScript 巨集指令碼控制台
+            <span className="text-amber-500">⚙️</span> {t('step5Title')}
           </h3>
           <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded font-mono font-bold tracking-wider">
             VBA ALTERNATIVE ENGINE
@@ -884,43 +1025,117 @@ setTimeline({
         </div>
         
         <p className="text-xs text-slate-600 mb-4 leading-relaxed">
-          當使用者在 LikeExcel 介面點擊 <span className="text-amber-700 font-bold">"VBA like"</span> 按鈕時，系統後端將會安全加載並動態執行下方區塊的指令。您可以編寫原生 JavaScript 邏輯，在寫入資料庫前，先行對試算表網格數據進行全自動化的格式清洗、空值置換、或自訂進階運算。
+          {t('step5DescBefore')} <span className="text-amber-700 font-bold">"VBA like"</span> {t('step5DescAfter')}
         </p>
 
-        <div className="relative rounded-lg overflow-hidden border border-slate-300 bg-white shadow-inner">
-          <div className="flex items-center justify-between bg-slate-100 px-4 py-2 text-xs text-slate-600 font-mono border-b border-slate-200">
-            <span className="font-semibold text-slate-700">macro_script_sandbox.js</span>
-            <button 
-              type="button"
-              onClick={() => { if(window.confirm("確定要將腳本還原成預設範本結構嗎？")) setMacroScript(DEFAULT_MACRO_TEMPLATE); }}
-              className="text-amber-600 hover:text-amber-700 font-bold transition-colors"
-            >
-              🔄 還原預設範本
-            </button>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* 左側：程式碼編輯器 */}
+          <div className="flex flex-col rounded-lg overflow-hidden border border-slate-300 bg-white shadow-inner">
+            <div className="flex items-center justify-between bg-slate-100 px-4 py-2 text-xs text-slate-600 font-mono border-b border-slate-200">
+              <span className="font-semibold text-slate-700">macro_script_sandbox.js</span>
+              <div className="flex items-center gap-3">
+                <select
+                  value={activeMacroEntry}
+                  onChange={(e) => setMacroEntry(e.target.value)}
+                  title={t('selectFunction')}
+                  className="max-w-[12rem] px-2 py-1 border border-slate-300 rounded bg-white text-slate-700 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  <option value="">{t('runWholeScript')}</option>
+                  {macroFunctions.map(name => <option key={name} value={name}>{name}()</option>)}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => { if (!macroScript || window.confirm(t('confirmClearMacro'))) setMacroScript(''); }}
+                  className="text-slate-500 hover:text-slate-700 font-bold transition-colors"
+                >
+                  {t('clearConsole')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRunMacro(true)}
+                  disabled={macroRunning || !filenameField}
+                  title={filenameField ? t('runAndSaveTitle', { file: filenameField }) : t('runAndSaveNeedsFile')}
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-bold rounded shadow-sm transition-colors"
+                >
+                  {t('runAndSave')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRunMacro()}
+                  disabled={macroRunning}
+                  title="Ctrl+Enter"
+                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white font-bold rounded shadow-sm transition-colors"
+                >
+                  {macroRunning ? t('runningMacro') : t('runMacro')}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex h-96">
+              <div
+                ref={macroGutterRef}
+                className="select-none overflow-hidden bg-slate-50 border-r border-slate-200 py-4 px-2 text-right font-mono text-xs leading-relaxed text-slate-400"
+              >
+                {macroScript.split('\n').map((_, i) => <div key={i}>{i + 1}</div>)}
+              </div>
+              <textarea
+                value={macroScript}
+                onChange={(e) => setMacroScript(e.target.value)}
+                onKeyDown={handleMacroKeyDown}
+                onScroll={(e) => { if (macroGutterRef.current) macroGutterRef.current.scrollTop = e.currentTarget.scrollTop; }}
+                spellCheck={false}
+                wrap="off"
+                className="flex-1 p-4 bg-white text-slate-800 font-mono text-xs focus:outline-none leading-relaxed resize-none border-0 whitespace-pre overflow-auto"
+                style={{ tabSize: 2 }}
+                placeholder={t('macroPlaceholder')}
+              />
+            </div>
           </div>
-          
-          <textarea
-            value={macroScript}
-            onChange={(e) => setMacroScript(e.target.value)}
-            rows={10}
-            className="w-full p-4 bg-white text-slate-800 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 leading-relaxed resize-y border-0"
-            style={{ tabSize: 2 }}
-            placeholder="// 請在此撰寫自訂的 JavaScript 巨集代碼..."
-          />
+
+          {/* 右側：除錯主控台 */}
+          <div className="flex flex-col rounded-lg overflow-hidden border border-slate-700 bg-slate-900 shadow-inner">
+            <div className="flex items-center justify-between bg-slate-800 px-4 py-2 text-xs font-mono border-b border-slate-700">
+              <span className="font-semibold text-slate-200">{t('debugConsole')}</span>
+              <button
+                type="button"
+                onClick={() => setMacroLogs([])}
+                className="text-slate-400 hover:text-slate-200 font-bold transition-colors"
+              >
+                {t('clearConsole')}
+              </button>
+            </div>
+            <div className="h-96 overflow-auto p-4 font-mono text-xs leading-relaxed">
+              {macroLogs.length === 0 ? (
+                <div className="text-slate-500">{t('consoleEmpty')}</div>
+              ) : (
+                macroLogs.map((line, i) => (
+                  <pre key={i} className={`whitespace-pre-wrap break-words ${MACRO_LOG_COLORS[line.level] || MACRO_LOG_COLORS.log}`}>{line.text}</pre>
+                ))
+              )}
+            </div>
+          </div>
         </div>
-        
+
         <div className="mt-3 flex flex-wrap gap-2 items-center text-[11px] text-slate-500">
-          <span className="text-slate-700 font-bold">💡 環境可用變數說明:</span>
-          <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">rows</span> (當前試算表橫列資料陣列)
+          <span className="text-slate-700 font-bold">{t('envVars')}</span>
+          <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">rows</span> {t('rowsDesc')}
           <span className="text-slate-300">|</span>
-          <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">console</span> (日誌追蹤輸出)
+          <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">sheet</span> {t('sheetDesc')}
+          <span className="text-slate-300">|</span>
+          <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">db</span> {t('dbDesc')}
+          <span className="text-slate-300">|</span>
+          <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">console</span> {t('consoleDesc')}
+          <span className="text-slate-300">|</span>
+          <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">input</span> {t('inputDesc')}
+          <span className="text-slate-300">|</span>
+          <span>{t('sampleRowsHint')}</span>
         </div>
       </div>
 
       {/* Save Button */}
       <div className="flex justify-end mt-8 border-t border-gray-200 pt-4">
         <button type="button" onClick={handleSaveConfig} className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm text-lg transition-all transform active:scale-95">
-          💾 {selectedTemplateCode === 'NEW' ? '儲存全新發布' : '更新目前範本設定'}
+          💾 {selectedTemplateCode === 'NEW' ? t('saveNew') : t('updateTemplate')}
         </button>
       </div>
 
@@ -933,8 +1148,8 @@ setTimeline({
               <div className="flex items-center gap-2">
                 <span className="text-lg">📋</span>
                 <div>
-                  <h4 className="font-bold text-sm tracking-wide">本機資料表結構設計工具</h4>
-                  <p className="text-[11px] text-slate-400">建立目標：{targetTable}</p>
+                  <h4 className="font-bold text-sm tracking-wide">{t('tableDesignerTitle')}</h4>
+                  <p className="text-[11px] text-slate-400">{t('createTarget', { table: targetTable })}</p>
                 </div>
               </div>
               <button type="button" onClick={() => setIsCreateModalOpen(false)} className="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
@@ -944,10 +1159,10 @@ setTimeline({
               <table className="w-full border-collapse text-left text-sm">
                 <thead>
                   <tr className="border-b border-gray-300 bg-slate-50">
-                    <th className="p-2 font-semibold text-gray-600">資料行名稱 (Column Name)</th>
-                    <th className="p-2 font-semibold text-gray-600 w-36">資料類型 (Data Type)</th>
-                    <th className="p-2 font-semibold text-gray-600 w-24">長度 (Length)</th>
-                    <th className="p-2 font-semibold text-gray-600 w-24 text-center">允許 Null</th>
+                    <th className="p-2 font-semibold text-gray-600">{t('columnName')}</th>
+                    <th className="p-2 font-semibold text-gray-600 w-36">{t('dataType')}</th>
+                    <th className="p-2 font-semibold text-gray-600 w-24">{t('length')}</th>
+                    <th className="p-2 font-semibold text-gray-600 w-24 text-center">{t('allowNull')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -983,13 +1198,13 @@ setTimeline({
                 onClick={() => setPreviewFields([...previewFields, { name: '', type: 'varchar', length: '50', allowNull: true }])} 
                 className="mt-3 text-xs font-bold text-blue-600 bg-blue-50 border border-blue-200 px-2 py-1.5 rounded hover:bg-blue-100 transition-all"
               >
-                + 新增自訂欄位 (Column)
+                {t('addColumn')}
               </button>
             </div>
 
             <div className="bg-slate-50 px-4 py-3 border-t border-gray-200 flex justify-end gap-2">
-              <button type="button" onClick={() => setIsCreateModalOpen(false)} className="px-4 py-2 text-xs font-medium border border-gray-300 rounded bg-white hover:bg-gray-50">取消</button>
-              <button type="button" onClick={handleExecuteCreateTable} className="px-4 py-2 text-xs font-bold bg-blue-600 text-white rounded hover:bg-blue-700 shadow-sm">⚡ 執行實體建表 SQL</button>
+              <button type="button" onClick={() => setIsCreateModalOpen(false)} className="px-4 py-2 text-xs font-medium border border-gray-300 rounded bg-white hover:bg-gray-50">{t('cancel')}</button>
+              <button type="button" onClick={handleExecuteCreateTable} className="px-4 py-2 text-xs font-bold bg-blue-600 text-white rounded hover:bg-blue-700 shadow-sm">{t('executeCreateTable')}</button>
             </div>
 
           </div>

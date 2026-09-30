@@ -1,0 +1,40 @@
+import { defineDict } from '../lang';
+
+export default defineDict({
+  en: {
+    title: 'FA Quotation Form',
+    newQuotation: 'New Quotation',
+    quoteId: 'Quote ID',
+    customer: 'Customer',
+    amount: 'Amount',
+    status: 'Status',
+    actions: 'Actions',
+    editor: 'Editor',
+    statusDraft: 'Draft',
+    statusPending: 'Pending',
+  },
+  ja: {
+    title: 'FA 見積フォーム',
+    newQuotation: '新規見積',
+    quoteId: '見積番号',
+    customer: '顧客',
+    amount: '金額',
+    status: 'ステータス',
+    actions: '操作',
+    editor: '編集',
+    statusDraft: '下書き',
+    statusPending: '保留中',
+  },
+  'zh-TW': {
+    title: 'FA 報價單',
+    newQuotation: '新增報價',
+    quoteId: '報價單號',
+    customer: '客戶',
+    amount: '金額',
+    status: '狀態',
+    actions: '操作',
+    editor: '編輯',
+    statusDraft: '草稿',
+    statusPending: '待處理',
+  },
+});

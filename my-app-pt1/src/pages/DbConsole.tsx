@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../config/apiBase';
+import { useT } from '../i18n/useI18n';
+import dict from '../i18n/locales/dbConsole';
 
 interface ExecuteSqlResult {
   success: boolean;
@@ -14,6 +16,7 @@ interface ExecuteSqlResult {
 const DESTRUCTIVE_PATTERN = /^\s*(delete|drop|update|alter|truncate)\b/i;
 
 export default function DbConsole() {
+  const t = useT(dict);
   const [dbFiles, setDbFiles] = useState<string[]>([]);
   const [loadingDbFiles, setLoadingDbFiles] = useState(true);
   const [selectedDbFile, setSelectedDbFile] = useState('');
@@ -38,15 +41,15 @@ export default function DbConsole() {
   const runSql = async (sqlOverride?: string) => {
     const sqlToRun = (sqlOverride ?? sqlText).trim();
     if (!selectedDbFile) {
-      setError('請先選擇一個資料庫檔案');
+      setError(t('selectDbFirst'));
       return;
     }
     if (!sqlToRun) {
-      setError('請輸入要執行的 SQL 指令');
+      setError(t('enterSql'));
       return;
     }
     if (DESTRUCTIVE_PATTERN.test(sqlToRun)) {
-      if (!window.confirm(`此指令看起來會修改或刪除資料庫內容：\n\n${sqlToRun}\n\n確定要在 [${selectedDbFile}] 上執行嗎？`)) {
+      if (!window.confirm(t('confirmDestructive', { sql: sqlToRun, dbFile: selectedDbFile }))) {
         return;
       }
     }
@@ -61,7 +64,7 @@ export default function DbConsole() {
         body: JSON.stringify({ dbFile: selectedDbFile, sql: sqlToRun }),
       });
       const data: ExecuteSqlResult = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.message || '執行失敗');
+      if (!res.ok || !data.success) throw new Error(data.message || t('execFailed'));
       setResult(data);
     } catch (err: any) {
       setError(err.message);
@@ -78,19 +81,19 @@ export default function DbConsole() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="text-xl font-bold text-slate-900 mb-1">DB Console</h1>
-      <p className="text-sm text-gray-500 mb-6">選擇一個本機 SQLite 資料庫檔案，直接下 SQL 指令查詢或修改資料。</p>
+      <h1 className="text-xl font-bold text-slate-900 mb-1">{t('title')}</h1>
+      <p className="text-sm text-gray-500 mb-6">{t('subtitle')}</p>
 
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-gray-700 mb-1">資料庫檔案</label>
+        <label className="block text-sm font-semibold text-gray-700 mb-1">{t('dbFile')}</label>
         <select
           value={selectedDbFile}
           onChange={e => setSelectedDbFile(e.target.value)}
           disabled={loadingDbFiles}
           className="w-full max-w-sm p-2 border border-gray-300 rounded-md bg-white text-slate-800"
         >
-          {loadingDbFiles && <option>載入中...</option>}
-          {!loadingDbFiles && dbFiles.length === 0 && <option value="">（尚無資料庫檔案）</option>}
+          {loadingDbFiles && <option>{t('loading')}</option>}
+          {!loadingDbFiles && dbFiles.length === 0 && <option value="">{t('noDbFiles')}</option>}
           {dbFiles.map(f => (
             <option key={f} value={f}>{f}</option>
           ))}
@@ -98,21 +101,21 @@ export default function DbConsole() {
       </div>
 
       <div className="mb-2 flex items-center justify-between">
-        <label className="block text-sm font-semibold text-gray-700">SQL 指令</label>
+        <label className="block text-sm font-semibold text-gray-700">{t('sqlLabel')}</label>
         <button
           type="button"
           onClick={listTables}
           disabled={!selectedDbFile || isExecuting}
           className="text-xs text-blue-600 hover:underline disabled:text-gray-400"
         >
-          列出所有資料表
+          {t('listTables')}
         </button>
       </div>
       <textarea
         value={sqlText}
         onChange={e => setSqlText(e.target.value)}
         rows={6}
-        placeholder="E.g. SELECT * FROM worksheet1 LIMIT 100;"
+        placeholder={t('sqlPlaceholder')}
         className="w-full p-3 border border-gray-300 rounded-md font-mono text-sm bg-white text-slate-800"
       />
 
@@ -123,7 +126,7 @@ export default function DbConsole() {
           disabled={isExecuting || !selectedDbFile}
           className="px-4 py-2 bg-slate-800 text-white text-sm font-semibold rounded-md hover:bg-slate-700 disabled:bg-gray-300"
         >
-          {isExecuting ? '執行中...' : '執行'}
+          {isExecuting ? t('executing') : t('execute')}
         </button>
       </div>
 
@@ -160,7 +163,7 @@ export default function DbConsole() {
               </table>
             </div>
           ) : (
-            <p className="text-sm text-gray-500">（查無結果）</p>
+            <p className="text-sm text-gray-500">{t('noResults')}</p>
           )}
         </div>
       )}

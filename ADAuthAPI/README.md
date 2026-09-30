@@ -1,5 +1,13 @@
 # ADAuthAPI - Active Directory Authentication API
 
+> **Production deployment:** use `deploy/iis/Deploy-Enterprise.ps1` (see
+> `deploy/iis/README.md`). It hosts this service as the `/adauth` application under
+> the main WebExcel IIS site, same origin as the frontend, and sets the shared JWT
+> secret (`Jwt:SharedSecret`). The scripts in this folder (`Setup-IIS.ps1`,
+> `Deploy-Complete.ps1`, `deploy-to-iis.bat`) set it up as a standalone site on
+> port 5000 instead, which is only useful for testing ADAuthAPI by itself. The
+> frontend no longer calls `:5000`.
+
 A C# ASP.NET Core Web API that provides Windows Authentication to get the current AD user's domain and username.
 
 ## Prerequisites

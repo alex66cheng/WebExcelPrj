@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../config/apiBase';
 import EditDeadlineControl from '../components/EditDeadlineControl';
 import { formatDeadline, isDeadlinePassed } from '../utils/editDeadline';
+import { useT } from '../i18n/useI18n';
+import dict from '../i18n/locales/excelList';
 
 interface ExcelPoolFile {
   fileName: string;    // 實體檔案名稱（檔案池內唯一，下載/匯入皆以此為準）
@@ -36,14 +38,15 @@ function formatSize(bytes: number) {
 
 // ⏰ 名稱旁的編輯期限標籤：未到期顯示「可編輯至…」，到期顯示「唯讀」
 function DeadlineBadge({ editDeadline }: { editDeadline: string | null }) {
+  const t = useT(dict);
   if (!editDeadline) return null;
   const expired = isDeadlinePassed(editDeadline);
   return (
     <span
-      title={`編輯期限：${formatDeadline(editDeadline)}`}
+      title={t('badgeTitle', { deadline: formatDeadline(editDeadline) })}
       className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold ${expired ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}
     >
-      {expired ? '🔒 已過期限・唯讀' : `⏰ 至 ${formatDeadline(editDeadline)}`}
+      {expired ? t('badgeExpired') : t('badgeUntil', { deadline: formatDeadline(editDeadline) })}
     </span>
   );
 }
@@ -56,6 +59,7 @@ function formatTime(iso: string) {
 }
 
 export default function LikeExcelList() {
+  const t = useT(dict);
   const [files, setFiles] = useState<ExcelPoolFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -87,14 +91,14 @@ export default function LikeExcelList() {
     try {
       const res = await apiFetch('/api/excel-pool/list');
       const data = await res.json();
-      if (!data.success) throw new Error(data.message || '讀取清單失敗');
+      if (!data.success) throw new Error(data.message || t('errLoadList'));
       setFiles(data.files as ExcelPoolFile[]);
     } catch (err) {
-      setMessage({ type: 'error', text: `無法連線至檔案池：${(err as Error).message}` });
+      setMessage({ type: 'error', text: t('errConnectPool', { error: (err as Error).message }) });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadFiles();
@@ -106,14 +110,14 @@ export default function LikeExcelList() {
     try {
       const res = await apiFetch('/api/excel-pool/shared-with-me');
       const data = await res.json();
-      if (!data.success) throw new Error(data.message || '讀取共享清單失敗');
+      if (!data.success) throw new Error(data.message || t('errLoadShared'));
       setSharedFiles(data.files as SharedPoolFile[]);
     } catch (err) {
-      setMessage({ type: 'error', text: `無法讀取與我共享的檔案：${(err as Error).message}` });
+      setMessage({ type: 'error', text: t('errLoadSharedFiles', { error: (err as Error).message }) });
     } finally {
       setSharedLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadSharedFiles();
@@ -130,11 +134,11 @@ export default function LikeExcelList() {
     try {
       const res = await apiFetch('/api/excel-pool/upload', { method: 'POST', body: formData });
       const data = await res.json();
-      if (!data.success) throw new Error(data.message || '上傳失敗');
+      if (!data.success) throw new Error(data.message || t('errUpload'));
       setMessage({ type: 'success', text: data.message });
       await loadFiles();
     } catch (err) {
-      setMessage({ type: 'error', text: `上傳失敗：${(err as Error).message}` });
+      setMessage({ type: 'error', text: t('errUploadWith', { error: (err as Error).message }) });
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -142,15 +146,15 @@ export default function LikeExcelList() {
   };
 
   const handleDelete = async (fileName: string) => {
-    if (!window.confirm(`確定要從檔案池刪除「${fileName}」嗎？此動作無法復原。`)) return;
+    if (!window.confirm(t('confirmDelete', { name: fileName }))) return;
     try {
       const res = await apiFetch(`/api/excel-pool/${encodeURIComponent(fileName)}`, { method: 'DELETE' });
       const data = await res.json();
-      if (!data.success) throw new Error(data.message || '刪除失敗');
-      setMessage({ type: 'success', text: `已刪除 ${fileName}` });
+      if (!data.success) throw new Error(data.message || t('errDelete'));
+      setMessage({ type: 'success', text: t('deleted', { name: fileName }) });
       await loadFiles();
     } catch (err) {
-      setMessage({ type: 'error', text: `刪除失敗：${(err as Error).message}` });
+      setMessage({ type: 'error', text: t('errDeleteWith', { error: (err as Error).message }) });
     }
   };
 
@@ -168,7 +172,7 @@ export default function LikeExcelList() {
   const submitEditName = async (fileName: string) => {
     const newName = editingName.trim();
     if (!newName) {
-      setMessage({ type: 'error', text: '名稱不可空白' });
+      setMessage({ type: 'error', text: t('errNameEmpty') });
       return;
     }
     setSavingName(true);
@@ -179,12 +183,12 @@ export default function LikeExcelList() {
         body: JSON.stringify({ displayName: newName })
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.message || '更新名稱失敗');
+      if (!data.success) throw new Error(data.message || t('errRename'));
       setFiles(prev => prev.map(f => (f.fileName === fileName ? { ...f, displayName: data.displayName } : f)));
-      setMessage({ type: 'success', text: `名稱已更新為「${data.displayName}」` });
+      setMessage({ type: 'success', text: t('renamed', { name: data.displayName }) });
       cancelEditName();
     } catch (err) {
-      setMessage({ type: 'error', text: `更新名稱失敗：${(err as Error).message}` });
+      setMessage({ type: 'error', text: t('errRenameWith', { error: (err as Error).message }) });
     } finally {
       setSavingName(false);
     }
@@ -197,7 +201,7 @@ export default function LikeExcelList() {
     if (!file.editable) {
       setMessage({
         type: 'error',
-        text: `.${file.ext} 格式無法於線上編輯器開啟，請下載後另存為 .xlsx 再上傳。`
+        text: t('errNotEditable', { ext: file.ext })
       });
       return;
     }
@@ -205,11 +209,17 @@ export default function LikeExcelList() {
     navigate(`/like-excel?poolFile=${encodeURIComponent(file.fileName)}${ownerQuery}`);
   };
 
+  // 📜 檔案修訂紀錄頁（受邀者檢視別人的檔案時帶 owner）
+  const openHistory = (file: ExcelPoolFile, ownerEmail?: string) => {
+    const ownerQuery = ownerEmail ? `&owner=${encodeURIComponent(ownerEmail)}` : '';
+    navigate(`/file-revisions?poolFile=${encodeURIComponent(file.fileName)}${ownerQuery}`);
+  };
+
   const handleDownload = async (file: ExcelPoolFile, ownerEmail?: string) => {
     try {
       const ownerQuery = ownerEmail ? `?owner=${encodeURIComponent(ownerEmail)}` : '';
       const res = await apiFetch(`/api/excel-pool/download/${encodeURIComponent(file.fileName)}${ownerQuery}`);
-      if (!res.ok) throw new Error('下載失敗');
+      if (!res.ok) throw new Error(t('errDownload'));
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -220,7 +230,7 @@ export default function LikeExcelList() {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setMessage({ type: 'error', text: `下載失敗：${(err as Error).message}` });
+      setMessage({ type: 'error', text: t('errDownloadWith', { error: (err as Error).message }) });
     }
   };
 
@@ -247,14 +257,14 @@ export default function LikeExcelList() {
     })
       .then(async (res) => {
         const data = await res.json();
-        if (!res.ok || !data.success) throw new Error(data.message || '邀請失敗');
+        if (!res.ok || !data.success) throw new Error(data.message || t('errInvite'));
         return data;
       })
       .then(() => {
         setInviteList(prev => (prev.includes(email) ? prev : [...prev, email]));
         setInviteEmailInput('');
       })
-      .catch(err => setMessage({ type: 'error', text: `邀請共同編輯失敗：${(err as Error).message}` }))
+      .catch(err => setMessage({ type: 'error', text: t('errInviteWith', { error: (err as Error).message }) }))
       .finally(() => setInviteLoading(false));
   };
 
@@ -293,8 +303,8 @@ export default function LikeExcelList() {
       {/* 頂部標頭與操作 */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between pb-5 mb-6 border-b border-gray-100 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Excel 檔案池</h1>
-          <p className="text-sm text-gray-500 mt-1">集中管理所有上傳至伺服器的 Excel 原始檔，供範本對應與匯入流程取用</p>
+          <h1 className="text-2xl font-bold text-slate-900">{t('title')}</h1>
+          <p className="text-sm text-gray-500 mt-1">{t('subtitle')}</p>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
@@ -303,14 +313,14 @@ export default function LikeExcelList() {
             disabled={loading || uploading}
             className="bg-white hover:bg-slate-50 text-slate-600 border border-gray-300 px-3 py-2.5 rounded-xl font-semibold text-sm transition-all disabled:opacity-50"
           >
-            🔄 重新整理
+            {t('refresh')}
           </button>
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
             className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-semibold text-sm shadow-sm transition-all flex items-center gap-2 disabled:opacity-60"
           >
-            {uploading ? '⏳ 上傳中…' : '📤 上傳 Excel 檔案'}
+            {uploading ? t('uploading') : t('upload')}
           </button>
           <input
             ref={fileInputRef}
@@ -345,7 +355,7 @@ export default function LikeExcelList() {
             activeTab === 'mine' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-600'
           }`}
         >
-          📁 我的檔案
+          {t('tabMine')}
         </button>
         <button
           onClick={() => setActiveTab('shared')}
@@ -353,7 +363,7 @@ export default function LikeExcelList() {
             activeTab === 'shared' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-600'
           }`}
         >
-          🤝 與我共享 {sharedFiles.length > 0 && `(${sharedFiles.length})`}
+          {t('tabShared')} {sharedFiles.length > 0 && `(${sharedFiles.length})`}
         </button>
       </div>
 
@@ -370,22 +380,22 @@ export default function LikeExcelList() {
         }`}
       >
         <div className="text-3xl mb-1">📁</div>
-        <div className="text-sm font-semibold text-slate-700">將 Excel 檔案拖曳到此處，或點擊選擇檔案</div>
-        <div className="text-xs text-gray-400 mt-1">支援 .xlsx / .xlsm / .xlsb / .xls / .csv，單檔上限 50 MB，可一次選取多個檔案</div>
+        <div className="text-sm font-semibold text-slate-700">{t('dropTitle')}</div>
+        <div className="text-xs text-gray-400 mt-1">{t('dropHint')}</div>
       </div>
 
       {/* 關鍵數據儀表板小卡 (KPI) */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         <div className="bg-slate-50 border border-slate-200/60 p-4 rounded-xl">
-          <span className="text-xs font-bold text-slate-400 uppercase">檔案總數</span>
-          <div className="text-2xl font-bold text-slate-800 mt-1">{files.length} 個</div>
+          <span className="text-xs font-bold text-slate-400 uppercase">{t('statTotal')}</span>
+          <div className="text-2xl font-bold text-slate-800 mt-1">{t('statCount', { n: files.length })}</div>
         </div>
         <div className="bg-green-50/50 border border-green-100 p-4 rounded-xl">
-          <span className="text-xs font-bold text-green-600 uppercase">佔用空間</span>
+          <span className="text-xs font-bold text-green-600 uppercase">{t('statSize')}</span>
           <div className="text-2xl font-bold text-green-700 mt-1">{formatSize(totalSize)}</div>
         </div>
         <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-xl">
-          <span className="text-xs font-bold text-blue-600 uppercase">最新上傳</span>
+          <span className="text-xs font-bold text-blue-600 uppercase">{t('statLatest')}</span>
           <div className="text-xl font-bold text-blue-700 mt-1.5">{latestUpload}</div>
         </div>
       </div>
@@ -396,7 +406,7 @@ export default function LikeExcelList() {
           <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 text-sm">🔍</span>
           <input
             type="text"
-            placeholder="搜尋檔案名稱..."
+            placeholder={t('searchPlaceholder')}
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full p-2 pl-9 bg-white border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -408,7 +418,7 @@ export default function LikeExcelList() {
           onChange={(e) => setExtFilter(e.target.value)}
           className="p-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
-          <option value="all">📊 所有格式</option>
+          <option value="all">{t('allFormats')}</option>
           {availableExts.map(ext => (
             <option key={ext} value={ext}>.{ext}</option>
           ))}
@@ -421,19 +431,19 @@ export default function LikeExcelList() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-gray-200 text-slate-400 text-xs font-bold uppercase tracking-wider">
-                <th className="p-4">名稱 (可編輯)</th>
-                <th className="p-4">實體檔案名稱</th>
-                <th className="p-4 w-24">格式</th>
-                <th className="p-4 w-28 text-right">檔案大小</th>
-                <th className="p-4 w-40">上傳時間</th>
-                <th className="p-4 w-56 text-center">操作</th>
+                <th className="p-4">{t('colNameEditable')}</th>
+                <th className="p-4">{t('colFileName')}</th>
+                <th className="p-4 w-24">{t('colFormat')}</th>
+                <th className="p-4 w-28 text-right">{t('colSize')}</th>
+                <th className="p-4 w-40">{t('colUploaded')}</th>
+                <th className="p-4 w-56 text-center">{t('colActions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 text-sm">
               {loading ? (
                 <tr>
                   <td colSpan={6} className="text-center p-10 text-gray-400 italic bg-gray-50/30">
-                    ⏳ 正在讀取檔案池清單...
+                    {t('loadingPool')}
                   </td>
                 </tr>
               ) : filteredFiles.length > 0 ? (
@@ -460,13 +470,13 @@ export default function LikeExcelList() {
                             disabled={savingName}
                             className="text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1.5 rounded-lg disabled:opacity-50"
                           >
-                            儲存
+                            {t('save')}
                           </button>
                           <button
                             onClick={cancelEditName}
                             className="text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-600 px-2.5 py-1.5 rounded-lg"
                           >
-                            取消
+                            {t('cancel')}
                           </button>
                         </div>
                       ) : (
@@ -476,7 +486,7 @@ export default function LikeExcelList() {
                           <DeadlineBadge editDeadline={item.editDeadline} />
                           <button
                             onClick={() => startEditName(item)}
-                            title="修改名稱"
+                            title={t('rename')}
                             className="opacity-0 group-hover:opacity-100 text-xs text-slate-400 hover:text-blue-600 transition-opacity shrink-0"
                           >
                             ✏️
@@ -509,28 +519,35 @@ export default function LikeExcelList() {
                       <button
                         onClick={() => handleOpen(item)}
                         disabled={!item.editable}
-                        title={item.editable ? '在線上編輯器開啟' : `.${item.ext} 格式不支援線上開啟`}
+                        title={item.editable ? t('openTitle') : t('openUnsupported', { ext: item.ext })}
                         className="text-emerald-700 hover:text-emerald-900 font-semibold text-xs bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-50"
                       >
-                        開啟
+                        {t('open')}
                       </button>
                       <button
                         onClick={() => handleDownload(item)}
                         className="ml-2 text-blue-600 hover:text-blue-800 font-semibold text-xs bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition-colors"
                       >
-                        下載
+                        {t('download')}
+                      </button>
+                      <button
+                        onClick={() => openHistory(item)}
+                        title={t('historyTitle')}
+                        className="ml-2 text-slate-600 hover:text-slate-900 font-semibold text-xs bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-lg transition-colors"
+                      >
+                        {t('history')}
                       </button>
                       <button
                         onClick={() => openInviteModal(item)}
                         className="ml-2 text-violet-600 hover:text-violet-800 font-semibold text-xs bg-violet-50 hover:bg-violet-100 px-2.5 py-1.5 rounded-lg transition-colors"
                       >
-                        邀請
+                        {t('invite')}
                       </button>
                       <button
                         onClick={() => handleDelete(item.fileName)}
                         className="ml-2 text-red-600 hover:text-red-800 font-semibold text-xs bg-red-50 hover:bg-red-100 px-2.5 py-1.5 rounded-lg transition-colors"
                       >
-                        刪除
+                        {t('delete')}
                       </button>
                     </td>
                   </tr>
@@ -539,8 +556,8 @@ export default function LikeExcelList() {
                 <tr>
                   <td colSpan={6} className="text-center p-10 text-gray-400 italic bg-gray-50/30">
                     {files.length === 0
-                      ? '💡 檔案池目前沒有任何 Excel 檔案，請先上傳。'
-                      : '💡 找不到符合條件的檔案。'}
+                      ? t('emptyPool')
+                      : t('emptyFiltered')}
                   </td>
                 </tr>
               )}
@@ -557,19 +574,19 @@ export default function LikeExcelList() {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-gray-200 text-slate-400 text-xs font-bold uppercase tracking-wider">
-                  <th className="p-4">名稱</th>
-                  <th className="p-4">擁有者</th>
-                  <th className="p-4 w-24">格式</th>
-                  <th className="p-4 w-28 text-right">檔案大小</th>
-                  <th className="p-4 w-40">最後異動</th>
-                  <th className="p-4 w-40 text-center">操作</th>
+                  <th className="p-4">{t('colName')}</th>
+                  <th className="p-4">{t('colOwner')}</th>
+                  <th className="p-4 w-24">{t('colFormat')}</th>
+                  <th className="p-4 w-28 text-right">{t('colSize')}</th>
+                  <th className="p-4 w-40">{t('colModified')}</th>
+                  <th className="p-4 w-40 text-center">{t('colActions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 text-sm">
                 {sharedLoading ? (
                   <tr>
                     <td colSpan={6} className="text-center p-10 text-gray-400 italic bg-gray-50/30">
-                      ⏳ 正在讀取共享清單...
+                      {t('loadingShared')}
                     </td>
                   </tr>
                 ) : sharedFiles.length > 0 ? (
@@ -598,16 +615,23 @@ export default function LikeExcelList() {
                         <button
                           onClick={() => handleOpen(item, item.ownerEmail)}
                           disabled={!item.editable}
-                          title={item.editable ? '在線上編輯器開啟' : `.${item.ext} 格式不支援線上開啟`}
+                          title={item.editable ? t('openTitle') : t('openUnsupported', { ext: item.ext })}
                           className="text-emerald-700 hover:text-emerald-900 font-semibold text-xs bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-50"
                         >
-                          開啟
+                          {t('open')}
                         </button>
                         <button
                           onClick={() => handleDownload(item, item.ownerEmail)}
                           className="ml-2 text-blue-600 hover:text-blue-800 font-semibold text-xs bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg transition-colors"
                         >
-                          下載
+                          {t('download')}
+                        </button>
+                        <button
+                          onClick={() => openHistory(item, item.ownerEmail)}
+                          title={t('historyTitle')}
+                          className="ml-2 text-slate-600 hover:text-slate-900 font-semibold text-xs bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-lg transition-colors"
+                        >
+                          {t('history')}
                         </button>
                       </td>
                     </tr>
@@ -615,7 +639,7 @@ export default function LikeExcelList() {
                 ) : (
                   <tr>
                     <td colSpan={6} className="text-center p-10 text-gray-400 italic bg-gray-50/30">
-                      💡 目前沒有人邀請你共同編輯檔案。
+                      {t('emptyShared')}
                     </td>
                   </tr>
                 )}
@@ -629,12 +653,12 @@ export default function LikeExcelList() {
       {inviteTarget && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-96 max-w-[90vw]">
-            <h3 className="text-lg font-bold text-slate-800 mb-1">邀請共同編輯 / 編輯期限</h3>
+            <h3 className="text-lg font-bold text-slate-800 mb-1">{t('inviteTitle')}</h3>
             <p className="text-xs text-slate-500 mb-4 truncate" title={inviteTarget.fileName}>
-              檔案：{inviteTarget.displayName}
+              {t('inviteFile', { name: inviteTarget.displayName })}
             </p>
 
-            <label className="block text-sm font-medium text-slate-700 mb-1">對方的 Email：</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">{t('inviteEmailLabel')}</label>
             <div className="flex gap-2 mb-4">
               <input
                 type="email"
@@ -650,7 +674,7 @@ export default function LikeExcelList() {
                 disabled={inviteLoading || !inviteEmailInput.trim()}
                 className="px-4 py-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 rounded transition-colors disabled:opacity-50"
               >
-                邀請
+                {t('invite')}
               </button>
             </div>
 
@@ -661,13 +685,13 @@ export default function LikeExcelList() {
                 setInviteTarget(prev => (prev ? { ...prev, editDeadline } : prev));
                 setFiles(prev => prev.map(f => (f.fileName === inviteTarget.fileName ? { ...f, editDeadline } : f)));
               }}
-              onError={(msg) => setMessage({ type: 'error', text: `設定編輯期限失敗：${msg}` })}
+              onError={(msg) => setMessage({ type: 'error', text: t('errDeadlineWith', { error: msg }) })}
             />
 
-            <div className="text-xs font-semibold text-slate-500 mb-1">已邀請的共同編輯者：</div>
+            <div className="text-xs font-semibold text-slate-500 mb-1">{t('invitedList')}</div>
             <div className="max-h-40 overflow-y-auto border border-slate-200 rounded divide-y divide-slate-100">
               {inviteList.length === 0 ? (
-                <div className="text-xs text-slate-400 italic p-3">尚未邀請任何人</div>
+                <div className="text-xs text-slate-400 italic p-3">{t('noInvites')}</div>
               ) : (
                 inviteList.map((email) => (
                   <div key={email} className="flex items-center justify-between px-3 py-2 text-sm text-slate-700">
@@ -676,7 +700,7 @@ export default function LikeExcelList() {
                       onClick={() => revokeInvite(email)}
                       className="text-xs text-red-600 hover:text-red-800 font-semibold ml-2 shrink-0"
                     >
-                      移除
+                      {t('remove')}
                     </button>
                   </div>
                 ))
@@ -688,7 +712,7 @@ export default function LikeExcelList() {
                 onClick={() => setInviteTarget(null)}
                 className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors"
               >
-                關閉
+                {t('close')}
               </button>
             </div>
           </div>

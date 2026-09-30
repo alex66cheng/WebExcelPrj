@@ -1,5 +1,7 @@
 // src/pages/DailyForecastChangePage.tsx
 import { useState } from 'react';
+import { useT } from '../i18n/useI18n';
+import dict from '../i18n/locales/forecastChange';
 
 interface ForecastChangeRecord {
   id: string;
@@ -52,6 +54,7 @@ const mockForecastChanges: ForecastChangeRecord[] = [
 
 export default function DailyForecastChangePage() {
   const [changes] = useState<ForecastChangeRecord[]>(mockForecastChanges);
+  const t = useT(dict);
   const [searchTerm, setSearchTerm] = useState('');
 
   const filteredChanges = changes.filter(item =>
@@ -67,22 +70,22 @@ export default function DailyForecastChangePage() {
 
       <div className="flex flex-col md:flex-row md:items-center md:justify-between pb-5 mb-6 border-b border-gray-100 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Daily Forecast Change Report</h1>
-          <p className="text-sm text-gray-500 mt-1">Track day-over-day forecast movements by customer and SKU, with root cause and recommended action.</p>
+          <h1 className="text-2xl font-bold text-slate-900">{t('title')}</h1>
+          <p className="text-sm text-gray-500 mt-1">{t('subtitle')}</p>
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         <div className="bg-slate-50 border border-slate-200/60 p-4 rounded-xl">
-          <span className="text-xs font-bold text-slate-400 uppercase">Total Changes</span>
+          <span className="text-xs font-bold text-slate-400 uppercase">{t('totalChanges')}</span>
           <div className="text-2xl font-bold text-slate-800 mt-1">{changes.length}</div>
         </div>
         <div className="bg-green-50/50 border border-green-100 p-4 rounded-xl">
-          <span className="text-xs font-bold text-green-600 uppercase">Increases</span>
+          <span className="text-xs font-bold text-green-600 uppercase">{t('increases')}</span>
           <div className="text-2xl font-bold text-green-700 mt-1">{increases}</div>
         </div>
         <div className="bg-red-50/50 border border-red-100 p-4 rounded-xl">
-          <span className="text-xs font-bold text-red-600 uppercase">Decreases</span>
+          <span className="text-xs font-bold text-red-600 uppercase">{t('decreases')}</span>
           <div className="text-2xl font-bold text-red-700 mt-1">{decreases}</div>
         </div>
       </div>
@@ -92,7 +95,7 @@ export default function DailyForecastChangePage() {
           <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 text-sm">🔍</span>
           <input
             type="text"
-            placeholder="Search by customer or SKU..."
+            placeholder={t('searchPlaceholder')}
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full p-2 pl-9 bg-white border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -105,11 +108,11 @@ export default function DailyForecastChangePage() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-gray-200 text-slate-400 text-xs font-bold uppercase tracking-wider">
-                <th className="p-4 w-40">Customer</th>
-                <th className="p-4 w-48">SKU</th>
-                <th className="p-4 w-40 text-right">Change</th>
-                <th className="p-4">Reason</th>
-                <th className="p-4">Action</th>
+                <th className="p-4 w-40">{t('customer')}</th>
+                <th className="p-4 w-48">{t('sku')}</th>
+                <th className="p-4 w-40 text-right">{t('change')}</th>
+                <th className="p-4">{t('reason')}</th>
+                <th className="p-4">{t('action')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 text-sm">
@@ -133,7 +136,7 @@ export default function DailyForecastChangePage() {
               ) : (
                 <tr>
                   <td colSpan={5} className="text-center p-10 text-gray-400 italic bg-gray-50/30">
-                    No forecast changes found for the current filter.
+                    {t('empty')}
                   </td>
                 </tr>
               )}
