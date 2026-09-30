@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { apiFetch } from '../config/apiBase';
 import { useT } from '../i18n/useI18n';
 import dict from '../i18n/locales/excelMappingSetup';
-import { listTopLevelFunctions } from '../utils/macroFunctions';
+import { listTopLevelFunctions, listMacroInputs } from '../utils/macroFunctions';
+import { useMacroInputDialog } from '../components/MacroInputDialog';
 
 // ==========================================
 // 1. TypeScript Interfaces & Definitions
@@ -136,6 +137,7 @@ export const ExcelMappingSetup: React.FC = () => {
   const [macroLogs, setMacroLogs] = useState<MacroLogLine[]>([]);
   const [macroRunning, setMacroRunning] = useState(false);
   const [macroEntry, setMacroEntry] = useState('');
+  const { askInputs, dialog: macroInputDialog } = useMacroInputDialog();
   const macroFunctions = useMemo(() => listTopLevelFunctions(macroScript), [macroScript]);
   // 選取的函式被改名或刪除時，自動退回「執行整份腳本」
   const activeMacroEntry = macroFunctions.includes(macroEntry) ? macroEntry : '';
@@ -442,6 +444,9 @@ setTimeline({
   const handleRunMacro = async (saveToFile = false) => {
     if (macroRunning) return;
     if (saveToFile && !window.confirm(t('confirmRunSaveFile', { file: filenameField }))) return;
+    // 腳本以 // @input 宣告的值先跳視窗詢問，按取消就不執行
+    const inputs = await askInputs(listMacroInputs(macroScript, activeMacroEntry), activeMacroEntry ? `${activeMacroEntry}()` : t('runWholeScript'));
+    if (!inputs) return;
     const sampleRows = buildSampleRows(rowHeaders, timeline);
     setMacroRunning(true);
     // 步驟 1 選了檔案池檔案時，後端改用該檔案的實際工作表（sheet 可用、rows 為實際展開結果）
@@ -461,7 +466,7 @@ setTimeline({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          script: macroScript, rows: sampleRows, entry: activeMacroEntry,
+          script: macroScript, rows: sampleRows, entry: activeMacroEntry, inputs,
           fileName: source, sheetMode, sheetValue, dataStartRow, rowHeaders, timeline, skipHeaders, saveToFile, dbFile
         })
       });
@@ -582,6 +587,7 @@ setTimeline({
 
   return (
     <div className="w-full text-slate-800 p-2 max-w-7xl mx-auto font-sans bg-white">
+      {macroInputDialog}
       
       {/* Master Top Header with Combined Dropdown Selection */}
       <div className="mb-6 border-b border-gray-200 pb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -1119,6 +1125,8 @@ setTimeline({
           <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">db</span> {t('dbDesc')}
           <span className="text-slate-300">|</span>
           <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">console</span> {t('consoleDesc')}
+          <span className="text-slate-300">|</span>
+          <span className="bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">input</span> {t('inputDesc')}
           <span className="text-slate-300">|</span>
           <span>{t('sampleRowsHint')}</span>
         </div>

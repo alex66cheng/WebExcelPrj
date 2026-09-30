@@ -2237,7 +2237,7 @@ function normalizeCellAddress(address) {
 //    rows 延後到腳本第一次讀取時才依欄位對應展開，所以在碰 rows 之前 sheet.set() 的值
 //    會進到匯入資料；rows 展開後再 sheet.set() 已影響不到匯入，直接丟錯提醒，避免誤以為有改到。
 //    沒有工作表可用時（步驟 5 試跑但步驟 1 沒選檔案），sheet 仍存在但呼叫即丟出說明原因的錯誤。
-function createMacroSandbox({ worksheet, buildRows, sandboxConsole, noSheetReason, onSet, db }) {
+function createMacroSandbox({ worksheet, buildRows, sandboxConsole, noSheetReason, onSet, db, inputs }) {
     let rows = null;
     const requireSheet = () => { if (!worksheet) throw new Error(noSheetReason || 'No worksheet available'); };
     const sheet = {
@@ -2258,6 +2258,20 @@ function createMacroSandbox({ worksheet, buildRows, sandboxConsole, noSheetReaso
     };
     const sandbox = { sheet, console: sandboxConsole };
     if (db) sandbox.db = db;
+    // input：執行前前端依腳本的 // @input 宣告跳窗讓使用者填的值（唯讀，一律為字串）
+    //   讀取沒被詢問過的名稱時直接丟錯，避免 sheet.set('G4', input.value) 默默把儲存格清空
+    //   （例如沒寫 // @input 宣告、瀏覽器還是舊版頁面、或 Save DB 匯入時沒有人可以回答）
+    const inputValues = Object.freeze(Object.fromEntries(
+        Object.entries(inputs && typeof inputs === 'object' ? inputs : {})
+            .filter(([k]) => /^[A-Za-z_$][\w$]*$/.test(k))
+            .map(([k, v]) => [k, v === null || v === undefined ? '' : String(v)])
+    ));
+    sandbox.input = new Proxy(inputValues, {
+        get(target, key) {
+            if (typeof key !== 'string' || key in target || key === 'then' || key === 'toJSON') return target[key];
+            throw new Error(`input.${key} was not provided – declare it with // @input ${key} "Label" above the function (the value is asked in a dialog before the run)`);
+        },
+    });
     Object.defineProperty(sandbox, 'rows', {
         get() { if (rows === null) rows = buildRows(); return rows; },
         set(v) { rows = v; },
@@ -2557,7 +2571,7 @@ function createMacroDb(dbFile, email) {
 const macroValueToText = (v) => (v === null || v === undefined ? null : v instanceof Date ? v.toISOString() : String(v));
 
 app.post('/api/spreadsheet/run-macro', async (req, res) => {
-    const { script, rows, entry, fileName, sheetMode, sheetValue, dataStartRow, rowHeaders, timeline, skipHeaders, saveToFile, dbFile } = req.body || {};
+    const { script, rows, entry, inputs, fileName, sheetMode, sheetValue, dataStartRow, rowHeaders, timeline, skipHeaders, saveToFile, dbFile } = req.body || {};
     const invalid = validateMacroRequest(script, entry);
     if (invalid) return res.json({ success: false, logs: [], error: invalid, durationMs: 0 });
 
@@ -2598,6 +2612,7 @@ app.post('/api/spreadsheet/run-macro', async (req, res) => {
             noSheetReason: 'sheet is unavailable: select an Excel file in Step 1 to test against a real worksheet',
             onSet,
             db: macroDb.api,
+            inputs,
         });
         const returnValue = await executeMacroInSandbox(sandbox, script, entry);
         const finalRows = sandbox.rows;
@@ -2655,7 +2670,7 @@ app.post('/api/spreadsheet/run-macro', async (req, res) => {
 // 工作表挑選規則與 Save DB（save-excel-to-sqlite-by-template）相同。
 // ========================================================
 app.post('/api/spreadsheet/run-template-macro', async (req, res) => {
-    const { templateCode, entry, spreadsheetData } = req.body || {};
+    const { templateCode, entry, inputs, spreadsheetData } = req.body || {};
     if (!spreadsheetData || !Array.isArray(spreadsheetData.sheets)) {
         return res.status(400).json({ success: false, logs: [], error: msg(req, 'invalidSpreadsheetData') });
     }
@@ -2686,6 +2701,7 @@ app.post('/api/spreadsheet/run-template-macro', async (req, res) => {
             sandboxConsole,
             onSet,
             db: macroDb.api,
+            inputs,
         });
         const returnValue = await executeMacroInSandbox(sandbox, macroScript, entry);
         res.json({

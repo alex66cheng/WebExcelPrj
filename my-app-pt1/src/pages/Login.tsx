@@ -80,7 +80,7 @@ export default function Login() {
         <LanguageSwitcher className="bg-slate-800 border-slate-700 text-slate-300" />
       </div>
       <div className="bg-white rounded-2xl shadow-xl p-10 flex flex-col items-center gap-6 w-full max-w-sm">
-        <h1 className="text-2xl font-bold text-slate-800">EXCEL.API</h1>
+        <h1 className="text-2xl font-bold text-slate-800">WebaseCell</h1>
         <p className="text-slate-500 text-sm text-center">
           {mode === 'login' ? t('subtitleLogin') : t('subtitleRegister')}
         </p>

@@ -27,7 +27,7 @@ export default function Home() {
         </div>
         
         <h1 className="text-6xl md:text-8xl font-black tracking-tighter mb-8 leading-none">
-          EXCEL<span className="text-blue-500">.</span>API
+          Webase<span className="text-blue-500">Cell</span>
         </h1>
         
         <p className="text-slate-400 text-lg md:text-xl mb-12 font-light leading-relaxed">

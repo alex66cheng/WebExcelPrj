@@ -6,6 +6,10 @@ import LanguageSwitcher from './LanguageSwitcher';
 import { useT } from '../i18n/useI18n';
 import dict from '../i18n/locales/layout';
 
+// 暫時隱藏的側邊欄項目（路由仍可直接存取）
+const SHOW_DASHBOARD = false;
+const SHOW_REPORT = false;
+
 export default function Layout() {
   // 控制各分類的收摺狀態
   const [isNewFormOpen, setIsNewFormOpen] = useState(true);
@@ -44,9 +48,11 @@ export default function Layout() {
         </div>
 
         <nav className="flex-1 p-4 flex flex-col gap-1 overflow-y-auto">
-          <NavLink to="/dashboard" className={({ isActive }) => `p-3 rounded text-sm block ${isActive ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
-            {t('dashboard')}
-          </NavLink>
+          {SHOW_DASHBOARD && (
+            <NavLink to="/dashboard" className={({ isActive }) => `p-3 rounded text-sm block ${isActive ? 'bg-blue-600' : 'hover:bg-slate-800'}`}>
+              {t('dashboard')}
+            </NavLink>
+          )}
 
           {/* NEW FORM 分類 */}
           <div className="mt-2">
@@ -109,23 +115,25 @@ export default function Layout() {
           </div>
 
           {/* REPORT 分類 */}
-          <div className="mt-2">
-            <button
-              onClick={() => setIsReportOpen(!isReportOpen)}
-              className="w-full flex justify-between items-center p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hover:text-white transition-colors"
-            >
-              {t('report')}
-              <span>{isReportOpen ? '▼' : '▶'}</span>
-            </button>
+          {SHOW_REPORT && (
+            <div className="mt-2">
+              <button
+                onClick={() => setIsReportOpen(!isReportOpen)}
+                className="w-full flex justify-between items-center p-3 text-xs font-semibold text-slate-500 uppercase tracking-wider hover:text-white transition-colors"
+              >
+                {t('report')}
+                <span>{isReportOpen ? '▼' : '▶'}</span>
+              </button>
 
-            {isReportOpen && (
-              <div className="flex flex-col gap-1">
-                <NavLink to="/report/forecast-change" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
-                  {t('forecastChange')}
-                </NavLink>
-              </div>
-            )}
-          </div>
+              {isReportOpen && (
+                <div className="flex flex-col gap-1">
+                  <NavLink to="/report/forecast-change" className={({ isActive }) => `flex items-center p-2 pl-9 rounded text-sm ${isActive ? 'text-blue-400 bg-slate-800' : 'text-slate-300 hover:bg-slate-800'}`}>
+                    {t('forecastChange')}
+                  </NavLink>
+                </div>
+              )}
+            </div>
+          )}
         </nav>
       </aside>
 

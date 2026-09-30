@@ -9,7 +9,8 @@ import { useLanguage, useT } from '../i18n/useI18n';
 import { useSyncfusionLocale } from '../i18n/syncfusion';
 import dict from '../i18n/locales/likeexcel';
 import { formatDeadline, isDeadlinePassed } from '../utils/editDeadline';
-import { listTopLevelFunctions } from '../utils/macroFunctions';
+import { listTopLevelFunctions, listMacroInputs } from '../utils/macroFunctions';
+import { useMacroInputDialog } from '../components/MacroInputDialog';
 import '@syncfusion/ej2-react-buttons';
 import { SpreadsheetComponent } from '@syncfusion/ej2-react-spreadsheet';
 
@@ -94,6 +95,7 @@ export default function LikeExcel() {
   // ▶ 範本巨集：函式下拉選單（空字串 = 整份腳本）與執行中狀態
   const [macroEntry, setMacroEntry] = useState('');
   const [isRunningMacro, setIsRunningMacro] = useState(false);
+  const { askInputs, dialog: macroInputDialog } = useMacroInputDialog();
 
   // 🌟 檔案池模式：網址帶 ?poolFile=xxx.xlsx 時，直接載入該檔案供檢視與編輯
   //    ?owner= 帶的是檔案「擁有者」email：受邀共同編輯的人開啟連結時會帶這個參數，
@@ -641,10 +643,13 @@ export default function LikeExcel() {
 
   // ▶ 對目前畫面內容執行範本巨集：後端只回傳 sheet.set() 的修改，這裡套用到網格並比照一般編輯
   //    同步給協作者、寫修訂紀錄，之後由回存/自動儲存寫進檔案（不寫資料庫）
-  const onRunMacro = () => {
+  //    腳本以 // @input 宣告的值先跳視窗詢問，按取消就不執行
+  const onRunMacro = async () => {
     const spreadsheet = spreadsheetRef.current as any;
     if (!spreadsheet || !selectedTemplate || !hasMacro || isRunningMacro || isReadOnlyRef.current) return;
     const fnLabel = activeMacroEntry ? `${activeMacroEntry}()` : t('macroWholeScript');
+    const inputs = await askInputs(listMacroInputs(selectedTemplate.macroScript || '', activeMacroEntry), fnLabel);
+    if (!inputs) return;
 
     setIsRunningMacro(true);
     spreadsheet.saveAsJson().then((response: any) => {
@@ -655,7 +660,7 @@ export default function LikeExcel() {
       return apiFetch('/api/spreadsheet/run-template-macro', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ templateCode: selectedTemplate.templateCode, entry: activeMacroEntry, spreadsheetData: workbookJson })
+        body: JSON.stringify({ templateCode: selectedTemplate.templateCode, entry: activeMacroEntry, inputs, spreadsheetData: workbookJson })
       }).then(res => res.json());
     })
       .then((result: any) => {
@@ -754,12 +759,13 @@ export default function LikeExcel() {
 
   return (
     <div className="h-full w-full flex flex-col overflow-hidden bg-white">
+      {macroInputDialog}
 
       {/* TOP NAV BAR & TEMPLATE SELECTOR */}
       <div className="h-12 border-b border-slate-200 flex items-center justify-between px-4 shrink-0 bg-slate-900 text-white">
         <div className="flex items-center gap-4 flex-1">
           <button
-            onClick={() => navigate(poolInfo ? '/like-excel-list' : '/tools')}
+            onClick={() => navigate('/like-excel-list')}
             className="text-slate-400 hover:text-white text-sm font-bold flex items-center gap-1 transition-colors shrink-0"
           >
             ← <span className="hidden sm:inline">{poolInfo ? t('backToFilePool') : t('backToTools')}</span>
