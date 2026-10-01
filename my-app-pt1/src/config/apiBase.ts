@@ -1,12 +1,14 @@
 import { getCurrentLang } from '../i18n/lang';
 
-// Enterprise build: everything is same-origin. In production IIS serves the
-// built frontend and reverse-proxies /api/* and the /excel-room-* WebSockets to
-// WebSideAPI on localhost:3000 (see deploy/iis/web.config); in development the
-// Vite dev server does the same proxying (see vite.config.ts). So the page's own
-// origin works over http or https, on any hostname, without env vars.
-export const API_BASE = window.location.origin;
-export const WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
+// Enterprise build: everything is same-origin. In production the frontend is an
+// IIS application under a sub-path (e.g. /WebExcelApp, set by `vite build --base`,
+// see deploy/iis/build-packages.sh) that reverse-proxies <base>/api/* and the
+// <base>/excel-room-* WebSockets to WebSideAPI on 127.0.0.1:3000 (see
+// deploy/iis/package/1-frontend/web.config); in development the base is "/" and
+// the Vite dev server does the same proxying (see vite.config.ts).
+export const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, '');
+export const API_BASE = `${window.location.origin}${BASE_PATH}`;
+export const WS_BASE = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}${BASE_PATH}`;
 
 const TOKEN_STORAGE_KEY = 'webexcelprj_auth_token';
 

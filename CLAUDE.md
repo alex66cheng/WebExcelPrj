@@ -16,12 +16,18 @@ Both must be running simultaneously for the app to function: the frontend hardco
 This branch is the enterprise variant of `cloud`. Login is Windows AD, handled by
 `ADAuthAPI/` (C# .NET 8 under IIS with Windows Authentication, which signs a JWT that
 WebSideAPI verifies with a shared secret). There's no Google or email/password login,
-and no `Login.tsx`. It deploys as a single IIS site: static `dist/`, `/api` and
-`/excel-room-*` reverse-proxied via ARR to Node on `127.0.0.1:3000` (NSSM service),
-`/adauth` as an IIS sub-application. See `deploy/iis/README.md` and
-`Deploy-Enterprise.ps1`. The frontend therefore uses same-origin URLs
-(`config/apiBase.ts`, `config/adAuth.ts`), and `vite.config.ts` proxies the same paths
-in dev. The shared secret comes from `JWT_SECRET` (Node) / `Jwt:SharedSecret`
+and no `Login.tsx`. It deploys to the existing `Default Web Site` of
+faapp.pist.com.tw as three separately installed parts, built on Linux by
+`deploy/iis/build-packages.sh` into one zip (build output only, no source): 1) the
+frontend `dist/` as IIS app `/WebExcelApp` (its `web.config` proxies
+`/WebExcelApp/api/*` and `/WebExcelApp/excel-room-*` via ARR to Node), 2) WebSideAPI
+as NSSM service on `127.0.0.1:3000` (shipped with pure-JS node_modules; unused deps
+like `@syncfusion/*`/`odbc` are pruned from the staged copy), 3) ADAuthAPI as IIS app
+`/WebExcelAuth`. See `deploy/iis/README.md` and `deploy/iis/package/`. The frontend's
+base path comes from `vite build --base` (`import.meta.env.BASE_URL`, used by
+`BrowserRouter basename`, `API_BASE`, `WS_BASE` in `config/apiBase.ts`) and the AD
+path from `VITE_AD_AUTH_PATH` (`config/adAuth.ts`); in dev both are root-relative and
+`vite.config.ts` proxies the same paths. The shared secret comes from `JWT_SECRET` (Node) / `Jwt:SharedSecret`
 (ADAuthAPI); the hardcoded literal is only a dev fallback. When merging `cloud` into
 this branch, keep the AD auth pieces and drop the Google/email-login routes and pages.
 
