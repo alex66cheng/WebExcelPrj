@@ -616,9 +616,9 @@ setTimeline({
       </div>
 
       {/* 📋 目標資料庫環境設定：本機 SQLite 檔案 */}
-      <div className="bg-amber-50/40 p-5 rounded-xl border border-amber-200 mb-6">
-        <label className="block text-sm font-bold text-amber-900 mb-3">{t('dbTargetTitle')}</label>
-        <p className="text-[11px] text-amber-700 mb-3">{t('dbTargetHint')}</p>
+      <div className="bg-[#F0F8F6] p-5 rounded-xl border border-[#C6E6DF] mb-6">
+        <label className="block text-sm font-bold text-[#0E3B36] mb-3">{t('dbTargetTitle')}</label>
+        <p className="text-[11px] text-[#1E6F64] mb-3">{t('dbTargetHint')}</p>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <div className="md:col-span-2">
             <label className="block text-xs font-semibold text-gray-600 mb-1">{t('selectExistingDb')}</label>
@@ -642,13 +642,13 @@ setTimeline({
             type="button"
             onClick={handleCreateDbFile}
             disabled={creatingDbFile}
-            className="w-full py-2 px-4 bg-amber-600 text-white font-bold text-sm rounded-lg hover:bg-amber-700 transition-all shadow-sm disabled:opacity-50"
+            className="w-full py-2 px-4 bg-blue-600 text-white font-bold text-sm rounded-lg hover:bg-blue-700 transition-all shadow-sm disabled:opacity-50"
           >
             {creatingDbFile ? t('creating') : t('createAndBindDb')}
           </button>
         </div>
         {dbFile && (
-          <p className="text-xs text-amber-800 font-mono font-semibold mt-3">{t('currentDbFile', { dbFile })}</p>
+          <p className="text-xs text-[#0E3B36] font-mono font-semibold mt-3">{t('currentDbFile', { dbFile })}</p>
         )}
       </div>
 
@@ -758,7 +758,7 @@ setTimeline({
                 type="button"
                 onClick={handleCheckTable}
                 disabled={checkingTable}
-                className="px-4 py-2 text-sm font-bold rounded-md bg-slate-700 hover:bg-slate-800 text-white shadow-sm transition-all shrink-0 disabled:opacity-50"
+                className="px-4 py-2 text-sm font-bold rounded-md bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all shrink-0 disabled:opacity-50"
               >
                 {checkingTable ? t('processing') : t('checkTable')}
               </button>
@@ -1017,15 +1017,15 @@ setTimeline({
       <div className="bg-slate-50 p-6 rounded-xl border border-slate-200 mb-6 shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-4">
           <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-            <span className="text-amber-500">⚙️</span> {t('step5Title')}
+            <span className="text-blue-500">⚙️</span> {t('step5Title')}
           </h3>
-          <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded font-mono font-bold tracking-wider">
+          <span className="text-[10px] bg-[#F0F8F6] text-[#1E6F64] border border-[#C6E6DF] px-2 py-0.5 rounded font-mono font-bold tracking-wider">
             VBA ALTERNATIVE ENGINE
           </span>
         </div>
         
         <p className="text-xs text-slate-600 mb-4 leading-relaxed">
-          {t('step5DescBefore')} <span className="text-amber-700 font-bold">"VBA like"</span> {t('step5DescAfter')}
+          {t('step5DescBefore')} <span className="text-[#1E6F64] font-bold">"VBA like"</span> {t('step5DescAfter')}
         </p>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1144,7 +1144,7 @@ setTimeline({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl border border-gray-300 w-full max-w-3xl overflow-hidden flex flex-col">
             
-            <div className="bg-slate-800 text-white px-4 py-3 flex justify-between items-center">
+            <div className="bg-[#0E3B36] text-white px-4 py-3 flex justify-between items-center">
               <div className="flex items-center gap-2">
                 <span className="text-lg">📋</span>
                 <div>

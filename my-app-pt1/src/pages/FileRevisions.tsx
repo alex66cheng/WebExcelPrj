@@ -212,7 +212,7 @@ export default function FileRevisions() {
           <button
             onClick={exportCsv}
             disabled={exporting || total === 0}
-            className="text-sm font-semibold bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
+            className="text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
           >
             {exporting ? t('exporting') : t('exportCsv')}
           </button>

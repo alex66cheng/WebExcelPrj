@@ -2,7 +2,8 @@ import { defineDict } from '../lang';
 
 export default defineDict({
   en: {
-    logout: 'Logout',
+    hideMenu: 'Hide menu',
+    showMenu: 'Show menu',
     dashboard: 'Dashboard',
     newForm: 'New Form',
     likeExcel: 'Like Excel',
@@ -15,7 +16,8 @@ export default defineDict({
     forecastChange: 'Forecast Change',
   },
   ja: {
-    logout: 'ログアウト',
+    hideMenu: 'メニューを隠す',
+    showMenu: 'メニューを表示',
     dashboard: 'ダッシュボード',
     newForm: '新規フォーム',
     likeExcel: 'Like Excel',
@@ -28,7 +30,8 @@ export default defineDict({
     forecastChange: 'フォーキャスト変動',
   },
   'zh-TW': {
-    logout: '登出',
+    hideMenu: '隱藏選單',
+    showMenu: '顯示選單',
     dashboard: '儀表板',
     newForm: '新表單',
     likeExcel: 'Like Excel',

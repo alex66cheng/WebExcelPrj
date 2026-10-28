@@ -6,7 +6,6 @@ import ProtectedRoute from './components/ProtectedRoute';
 import { GOOGLE_CLIENT_ID } from './config/googleAuth';
 import Layout from './components/Layout';
 import Home from './pages/Home';
-import Login from './pages/Login';
 import Docs from './pages/Docs';
 
 // Everything behind login is lazy-loaded so the landing page doesn't have to
@@ -33,7 +32,7 @@ export default function App() {
         <Routes>
           {/* 1. MOVE HOME HERE - Outside the Layout */}
           <Route path="/" element={<Home />} />
-          <Route path="/login" element={<Login />} />
+          <Route path="/login" element={<Home showLogin />} />
           <Route path="/docs" element={<Docs />} />
 
           {/* 2. ALL OTHER PAGES - Require a signed-in user */}

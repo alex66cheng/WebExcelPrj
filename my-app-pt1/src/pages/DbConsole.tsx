@@ -124,7 +124,7 @@ export default function DbConsole() {
           type="button"
           onClick={() => runSql()}
           disabled={isExecuting || !selectedDbFile}
-          className="px-4 py-2 bg-slate-800 text-white text-sm font-semibold rounded-md hover:bg-slate-700 disabled:bg-gray-300"
+          className="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-md hover:bg-blue-700 disabled:bg-gray-300"
         >
           {isExecuting ? t('executing') : t('execute')}
         </button>

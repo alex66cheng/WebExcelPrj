@@ -57,14 +57,14 @@ export default function SalesComparisonDashboard() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-200 p-4 font-sans text-xs">
+    <div className="min-h-screen bg-[#0E3B36] text-[#E5F3F0] p-4 font-sans text-xs">
       {/* 頂部標題列 */}
-      <header className="bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-t-lg flex justify-between items-center mb-3">
+      <header className="bg-[#134A43] border border-[#185C53] px-4 py-2.5 rounded-t-lg flex justify-between items-center mb-3">
         <div className="flex items-center gap-2 font-semibold text-slate-100 text-sm">
           <LayoutDashboard size={18} className="text-orange-500" />
           <span>{t('title')}</span>
         </div>
-        <div className="flex items-center gap-3 text-slate-400">
+        <div className="flex items-center gap-3 text-[#9DD3C8]">
           <button className="hover:text-white flex items-center gap-1"><RefreshCw size={12} /> {t('refresh')}</button>
           <span>|</span>
           <button className="hover:text-white">{t('settings')}</button>
@@ -75,15 +75,15 @@ export default function SalesComparisonDashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 mb-3">
         
         {/* 左側：詳細比較明細表格 (佔 5 格) */}
-        <div className="lg:col-span-5 bg-slate-800 border border-slate-700 rounded-lg flex flex-col h-[360px]">
-          <div className="bg-slate-700/60 px-3 py-2 font-semibold border-b border-slate-700 flex justify-between items-center">
+        <div className="lg:col-span-5 bg-[#134A43] border border-[#185C53] rounded-lg flex flex-col h-[360px]">
+          <div className="bg-[#185C53]/60 px-3 py-2 font-semibold border-b border-[#185C53] flex justify-between items-center">
             <span>{t('detailTitle', { dimension: selectedDimension === 'client' ? t('byClient') : t('byPart') })}</span>
-            <span className="text-[10px] text-slate-400">{t('rowCount', { n: aggregatedData.length })}</span>
+            <span className="text-[10px] text-[#9DD3C8]">{t('rowCount', { n: aggregatedData.length })}</span>
           </div>
           <div className="overflow-auto flex-1 p-2">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-slate-700 text-slate-400">
+                <tr className="border-b border-[#185C53] text-[#9DD3C8]">
                   <th className="p-1.5">{selectedDimension === 'client' ? t('clientName') : t('partNo')}</th>
                   <th className="p-1.5 text-right">{t('forecastCol')}</th>
                   <th className="p-1.5 text-right">{t('actualCol')}</th>
@@ -93,14 +93,14 @@ export default function SalesComparisonDashboard() {
               </thead>
               <tbody className="divide-y divide-slate-700/50">
                 {aggregatedData.map(row => (
-                  <tr key={row.name} className="hover:bg-slate-700/40">
+                  <tr key={row.name} className="hover:bg-[#185C53]/40">
                     <td className="p-1.5 font-medium text-orange-300">{row.name}</td>
                     <td className="p-1.5 text-right">{row.forecast}</td>
                     <td className="p-1.5 text-right">{row.actual}</td>
                     <td className={`p-1.5 text-right font-bold ${row.diff >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {row.diff > 0 ? `+${row.diff}` : row.diff}
                     </td>
-                    <td className="p-1.5 text-right text-slate-300">{row.achievementRate}%</td>
+                    <td className="p-1.5 text-right text-[#C6E6DF]">{row.achievementRate}%</td>
                   </tr>
                 ))}
               </tbody>
@@ -109,19 +109,19 @@ export default function SalesComparisonDashboard() {
         </div>
 
         {/* 中間：預估 vs 實際長條圖對比 (佔 5 格) */}
-        <div className="lg:col-span-5 bg-slate-800 border border-slate-700 rounded-lg p-3 flex flex-col h-[360px]">
+        <div className="lg:col-span-5 bg-[#134A43] border border-[#185C53] rounded-lg p-3 flex flex-col h-[360px]">
           <div className="flex justify-between items-center mb-2">
-            <span className="text-slate-300 font-semibold">{t('chartTitle')}</span>
-            <div className="flex bg-slate-900 p-0.5 rounded border border-slate-700">
+            <span className="text-[#C6E6DF] font-semibold">{t('chartTitle')}</span>
+            <div className="flex bg-[#0E3B36] p-0.5 rounded border border-[#185C53]">
               <button 
                 onClick={() => setSelectedDimension('client')}
-                className={`px-2 py-0.5 rounded ${selectedDimension === 'client' ? 'bg-orange-600 text-white' : 'text-slate-400'}`}
+                className={`px-2 py-0.5 rounded ${selectedDimension === 'client' ? 'bg-orange-600 text-white' : 'text-[#9DD3C8]'}`}
               >
                 {t('client')}
               </button>
               <button 
                 onClick={() => setSelectedDimension('partNo')}
-                className={`px-2 py-0.5 rounded ${selectedDimension === 'partNo' ? 'bg-orange-600 text-white' : 'text-slate-400'}`}
+                className={`px-2 py-0.5 rounded ${selectedDimension === 'partNo' ? 'bg-orange-600 text-white' : 'text-[#9DD3C8]'}`}
               >
                 {t('part')}
               </button>
@@ -144,16 +144,16 @@ export default function SalesComparisonDashboard() {
 
         {/* 右側：過濾器與 KPI 摘要 (佔 2 格) */}
         <div className="lg:col-span-2 flex flex-col gap-3">
-          <div className="bg-slate-800 border border-slate-700 rounded-lg p-3">
-            <div className="font-semibold text-slate-300 mb-2 flex items-center gap-1">
+          <div className="bg-[#134A43] border border-[#185C53] rounded-lg p-3">
+            <div className="font-semibold text-[#C6E6DF] mb-2 flex items-center gap-1">
               <Filter size={12} /> {t('filters')}
             </div>
             <div className="mb-2">
-              <label className="block text-slate-400 mb-1">{t('year')}</label>
+              <label className="block text-[#9DD3C8] mb-1">{t('year')}</label>
               <select 
                 value={selectedModel} 
                 onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded p-1 text-slate-200"
+                className="w-full bg-[#0E3B36] border border-[#185C53] rounded p-1 text-[#E5F3F0]"
               >
                 <option value="ALL">{t('fullYear')}</option>
                 <option value="H1">{t('firstHalf')}</option>
@@ -161,17 +161,17 @@ export default function SalesComparisonDashboard() {
             </div>
           </div>
 
-          <div className="bg-slate-800 border border-slate-700 rounded-lg p-3 flex-1 flex flex-col justify-around">
+          <div className="bg-[#134A43] border border-[#185C53] rounded-lg p-3 flex-1 flex flex-col justify-around">
             <div>
-              <div className="text-[10px] text-slate-400 uppercase">{t('totalForecastActual')}</div>
+              <div className="text-[10px] text-[#9DD3C8] uppercase">{t('totalForecastActual')}</div>
               <div className="text-sm font-bold text-white mt-0.5">{kpiStats.totalForecast} / {kpiStats.totalActual}</div>
             </div>
             <div>
-              <div className="text-[10px] text-slate-400 uppercase">{t('overallRate')}</div>
+              <div className="text-[10px] text-[#9DD3C8] uppercase">{t('overallRate')}</div>
               <div className="text-lg font-bold text-orange-400 mt-0.5">{kpiStats.rate}%</div>
             </div>
             <div>
-              <div className="text-[10px] text-slate-400 uppercase">{t('totalDiff')}</div>
+              <div className="text-[10px] text-[#9DD3C8] uppercase">{t('totalDiff')}</div>
               <div className={`text-sm font-bold mt-0.5 flex items-center gap-0.5 ${kpiStats.totalDiff >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {kpiStats.totalDiff >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
                 {kpiStats.totalDiff > 0 ? `+${kpiStats.totalDiff}` : kpiStats.totalDiff}
@@ -183,8 +183,8 @@ export default function SalesComparisonDashboard() {
       </div>
 
       {/* 底部：時間序列趨勢堆疊圖 */}
-      <div className="bg-slate-800 border border-slate-700 rounded-lg p-3">
-        <div className="text-slate-300 font-semibold mb-2">{t('trendTitle')}</div>
+      <div className="bg-[#134A43] border border-[#185C53] rounded-lg p-3">
+        <div className="text-[#C6E6DF] font-semibold mb-2">{t('trendTitle')}</div>
         <div className="h-[180px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={rawSalesData}>

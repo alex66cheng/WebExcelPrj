@@ -390,9 +390,9 @@ export default function LikeExcelList() {
           <span className="text-xs font-bold text-slate-400 uppercase">{t('statTotal')}</span>
           <div className="text-2xl font-bold text-slate-800 mt-1">{t('statCount', { n: files.length })}</div>
         </div>
-        <div className="bg-green-50/50 border border-green-100 p-4 rounded-xl">
-          <span className="text-xs font-bold text-green-600 uppercase">{t('statSize')}</span>
-          <div className="text-2xl font-bold text-green-700 mt-1">{formatSize(totalSize)}</div>
+        <div className="bg-[#F0F8F6] border border-[#C6E6DF] p-4 rounded-xl">
+          <span className="text-xs font-bold text-[#1E6F64] uppercase">{t('statSize')}</span>
+          <div className="text-2xl font-bold text-[#0E3B36] mt-1">{formatSize(totalSize)}</div>
         </div>
         <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-xl">
           <span className="text-xs font-bold text-blue-600 uppercase">{t('statLatest')}</span>
@@ -474,7 +474,7 @@ export default function LikeExcelList() {
                           </button>
                           <button
                             onClick={cancelEditName}
-                            className="text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-600 px-2.5 py-1.5 rounded-lg"
+                            className="text-xs font-semibold bg-[#F0F8F6] hover:bg-[#E5F3F0] text-[#1E6F64] px-2.5 py-1.5 rounded-lg"
                           >
                             {t('cancel')}
                           </button>
@@ -520,7 +520,7 @@ export default function LikeExcelList() {
                         onClick={() => handleOpen(item)}
                         disabled={!item.editable}
                         title={item.editable ? t('openTitle') : t('openUnsupported', { ext: item.ext })}
-                        className="text-emerald-700 hover:text-emerald-900 font-semibold text-xs bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-50"
+                        className="text-[#1E6F64] hover:text-[#0E3B36] font-semibold text-xs bg-[#F0F8F6] hover:bg-[#E5F3F0] px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-[#F0F8F6]"
                       >
                         {t('open')}
                       </button>
@@ -533,13 +533,13 @@ export default function LikeExcelList() {
                       <button
                         onClick={() => openHistory(item)}
                         title={t('historyTitle')}
-                        className="ml-2 text-slate-600 hover:text-slate-900 font-semibold text-xs bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-lg transition-colors"
+                        className="ml-2 text-[#1E6F64] hover:text-[#0E3B36] font-semibold text-xs bg-[#F0F8F6] hover:bg-[#E5F3F0] px-2.5 py-1.5 rounded-lg transition-colors"
                       >
                         {t('history')}
                       </button>
                       <button
                         onClick={() => openInviteModal(item)}
-                        className="ml-2 text-violet-600 hover:text-violet-800 font-semibold text-xs bg-violet-50 hover:bg-violet-100 px-2.5 py-1.5 rounded-lg transition-colors"
+                        className="ml-2 text-[#1E6F64] hover:text-[#0E3B36] font-semibold text-xs bg-[#F0F8F6] hover:bg-[#E5F3F0] px-2.5 py-1.5 rounded-lg transition-colors"
                       >
                         {t('invite')}
                       </button>
@@ -616,7 +616,7 @@ export default function LikeExcelList() {
                           onClick={() => handleOpen(item, item.ownerEmail)}
                           disabled={!item.editable}
                           title={item.editable ? t('openTitle') : t('openUnsupported', { ext: item.ext })}
-                          className="text-emerald-700 hover:text-emerald-900 font-semibold text-xs bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-50"
+                          className="text-[#1E6F64] hover:text-[#0E3B36] font-semibold text-xs bg-[#F0F8F6] hover:bg-[#E5F3F0] px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-[#F0F8F6]"
                         >
                           {t('open')}
                         </button>
@@ -629,7 +629,7 @@ export default function LikeExcelList() {
                         <button
                           onClick={() => openHistory(item, item.ownerEmail)}
                           title={t('historyTitle')}
-                          className="ml-2 text-slate-600 hover:text-slate-900 font-semibold text-xs bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-lg transition-colors"
+                          className="ml-2 text-[#1E6F64] hover:text-[#0E3B36] font-semibold text-xs bg-[#F0F8F6] hover:bg-[#E5F3F0] px-2.5 py-1.5 rounded-lg transition-colors"
                         >
                           {t('history')}
                         </button>

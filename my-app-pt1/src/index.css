@@ -1,4 +1,73 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
 @import "tailwindcss";
+
+/* 🎨 Greenwave look (same as the home page / https://www.greenwave.com.tw):
+   the blue, indigo, sky, violet and purple colour families are remapped to the brand teal, so
+   every existing bg-blue-600 / text-blue-500 / ring-indigo-400 … in the app
+   turns teal without touching each page. 400 = #6BBBAE, 600 = #1E6F64, 900 = #0E3B36. */
+@theme {
+  --font-sans: 'Noto Sans TC', system-ui, sans-serif;
+  --color-blue-50: #F0F8F6;
+  --color-blue-100: #E5F3F0;
+  --color-blue-200: #C6E6DF;
+  --color-blue-300: #9DD3C8;
+  --color-blue-400: #6BBBAE;
+  --color-blue-500: #3F9C8E;
+  --color-blue-600: #1E6F64;
+  --color-blue-700: #185C53;
+  --color-blue-800: #134A43;
+  --color-blue-900: #0E3B36;
+  --color-blue-950: #082522;
+  --color-indigo-50: #F0F8F6;
+  --color-indigo-100: #E5F3F0;
+  --color-indigo-200: #C6E6DF;
+  --color-indigo-300: #9DD3C8;
+  --color-indigo-400: #6BBBAE;
+  --color-indigo-500: #3F9C8E;
+  --color-indigo-600: #1E6F64;
+  --color-indigo-700: #185C53;
+  --color-indigo-800: #134A43;
+  --color-indigo-900: #0E3B36;
+  --color-indigo-950: #082522;
+  --color-sky-50: #F0F8F6;
+  --color-sky-100: #E5F3F0;
+  --color-sky-200: #C6E6DF;
+  --color-sky-300: #9DD3C8;
+  --color-sky-400: #6BBBAE;
+  --color-sky-500: #3F9C8E;
+  --color-sky-600: #1E6F64;
+  --color-sky-700: #185C53;
+  --color-sky-800: #134A43;
+  --color-sky-900: #0E3B36;
+  --color-sky-950: #082522;
+  --color-violet-50: #F0F8F6;
+  --color-violet-100: #E5F3F0;
+  --color-violet-200: #C6E6DF;
+  --color-violet-300: #9DD3C8;
+  --color-violet-400: #6BBBAE;
+  --color-violet-500: #3F9C8E;
+  --color-violet-600: #1E6F64;
+  --color-violet-700: #185C53;
+  --color-violet-800: #134A43;
+  --color-violet-900: #0E3B36;
+  --color-violet-950: #082522;
+  --color-purple-50: #F0F8F6;
+  --color-purple-100: #E5F3F0;
+  --color-purple-200: #C6E6DF;
+  --color-purple-300: #9DD3C8;
+  --color-purple-400: #6BBBAE;
+  --color-purple-500: #3F9C8E;
+  --color-purple-600: #1E6F64;
+  --color-purple-700: #185C53;
+  --color-purple-800: #134A43;
+  --color-purple-900: #0E3B36;
+  --color-purple-950: #082522;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: #333333;
+}
 
 html, body, #root {
   height: 100% !important;
