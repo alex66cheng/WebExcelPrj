@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { apiFetch } from '../config/apiBase';
 import { useT } from '../i18n/useI18n';
 import dict from '../i18n/locales/excelMappingSetup';
-import { listTopLevelFunctions, listMacroInputs } from '../utils/macroFunctions';
+import { listTopLevelFunctions, listMacroInputs, macroFormTitle } from '../utils/macroFunctions';
 import { useMacroInputDialog } from '../components/MacroInputDialog';
 
 // ==========================================
@@ -445,7 +445,7 @@ setTimeline({
     if (macroRunning) return;
     if (saveToFile && !window.confirm(t('confirmRunSaveFile', { file: filenameField }))) return;
     // 腳本以 // @input 宣告的值先跳視窗詢問，按取消就不執行
-    const inputs = await askInputs(listMacroInputs(macroScript, activeMacroEntry), activeMacroEntry ? `${activeMacroEntry}()` : t('runWholeScript'));
+    const inputs = await askInputs(listMacroInputs(macroScript, activeMacroEntry), activeMacroEntry ? `${activeMacroEntry}()` : t('runWholeScript'), macroFormTitle(macroScript, activeMacroEntry));
     if (!inputs) return;
     const sampleRows = buildSampleRows(rowHeaders, timeline);
     setMacroRunning(true);

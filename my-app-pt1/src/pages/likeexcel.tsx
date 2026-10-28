@@ -9,8 +9,9 @@ import { useLanguage, useT } from '../i18n/useI18n';
 import { useSyncfusionLocale } from '../i18n/syncfusion';
 import dict from '../i18n/locales/likeexcel';
 import { formatDeadline, isDeadlinePassed } from '../utils/editDeadline';
-import { listTopLevelFunctions, listMacroInputs } from '../utils/macroFunctions';
+import { listTopLevelFunctions, listMacroInputs, macroFormTitle } from '../utils/macroFunctions';
 import { useMacroInputDialog } from '../components/MacroInputDialog';
+import { attachTextOverflow } from '../utils/textOverflow';
 import '@syncfusion/ej2-react-buttons';
 import { SpreadsheetComponent } from '@syncfusion/ej2-react-spreadsheet';
 
@@ -84,6 +85,9 @@ export default function LikeExcel() {
   const spreadsheetRef = useRef<SpreadsheetComponent>(null);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  // 📏 Excel 式文字溢出到相鄰空白儲存格（解除函式）
+  const detachOverflowRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => { detachOverflowRef.current?.(); }, []);
   const { user } = useAuth();
   const t = useT(dict);
   const { lang } = useLanguage();
@@ -648,7 +652,7 @@ export default function LikeExcel() {
     const spreadsheet = spreadsheetRef.current as any;
     if (!spreadsheet || !selectedTemplate || !hasMacro || isRunningMacro || isReadOnlyRef.current) return;
     const fnLabel = activeMacroEntry ? `${activeMacroEntry}()` : t('macroWholeScript');
-    const inputs = await askInputs(listMacroInputs(selectedTemplate.macroScript || '', activeMacroEntry), fnLabel);
+    const inputs = await askInputs(listMacroInputs(selectedTemplate.macroScript || '', activeMacroEntry), fnLabel, macroFormTitle(selectedTemplate.macroScript || '', activeMacroEntry));
     if (!inputs) return;
 
     setIsRunningMacro(true);
@@ -1009,6 +1013,8 @@ export default function LikeExcel() {
               (window as any).mySpreadsheet = spreadsheetRef.current;
               // 檔案池的內容比元件早一步取回時，於此補上載入
               if (pendingPoolJson.current) {
+              detachOverflowRef.current?.();
+              detachOverflowRef.current = attachTextOverflow(spreadsheetRef.current);
                 const json = pendingPoolJson.current;
                 pendingPoolJson.current = null;
                 applyPoolJson(json);

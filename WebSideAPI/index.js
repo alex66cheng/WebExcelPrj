@@ -749,6 +749,8 @@ function populateWorksheetFromSpreadsheetJson(worksheet, sourceSheet) {
         if (!row) return;
         const targetRow = worksheet.getRow(rowIdx + 1);
         if (row.height) targetRow.height = row.height / 1.33;
+        // 🙈 依編輯器目前狀態寫回列的隱藏/取消隱藏（JSON 有帶到的列才處理）
+        targetRow.hidden = !!row.hidden;
 
         const cells = Array.isArray(row.cells) ? row.cells : Object.values(row.cells || {});
         cells.forEach((cell, colIdx) => {
@@ -826,7 +828,11 @@ function populateWorksheetFromSpreadsheetJson(worksheet, sourceSheet) {
 
     const sourceColumns = Array.isArray(sourceSheet.columns) ? sourceSheet.columns : [];
     sourceColumns.forEach((col, idx) => {
-        if (col && col.width) worksheet.getColumn(idx + 1).width = col.width / 7;
+        if (!col) return;
+        const targetCol = worksheet.getColumn(idx + 1);
+        if (col.width) targetCol.width = col.width / 7;
+        // 🙈 依編輯器目前狀態寫回欄的隱藏/取消隱藏；JSON 沒帶到的欄維持原檔設定不動
+        targetCol.hidden = !!col.hidden;
     });
 
     merges.forEach(range => {
@@ -1512,13 +1518,18 @@ function buildSpreadsheetSheetJson(worksheet, themeColors, hiddenSheetNames, opt
         }
 
         formattedRows[rowNumber - 1] = { cells: cells, height: row.height ? row.height * 1.33 : 20 };
+        // 🙈 原檔隱藏的列要帶 hidden 給 Syncfusion，否則開檔後隱藏列全部跑出來
+        if (row.hidden) formattedRows[rowNumber - 1].hidden = true;
     });
 
     // 🛡️ 建立對應的欄位寬度陣列
     const columns = [];
     for (let c = 1; c <= maxColCount; c++) {
         const col = worksheet.getColumn(c);
-        columns.push({ width: col.width ? col.width * 7 : 64 });
+        const colObj = { width: col.width ? col.width * 7 : 64 };
+        // 🙈 原檔隱藏的欄同樣要帶 hidden，否則開檔後隱藏欄全部顯示出來
+        if (col.hidden) colObj.hidden = true;
+        columns.push(colObj);
     }
 
    if (worksheet._merges) {

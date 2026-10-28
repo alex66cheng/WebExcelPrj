@@ -11,12 +11,14 @@ module.exports = {
       cwd: './WebSideAPI',
     },
     {
-      // Production build served by serve-dist.mjs (compressed + browser-cached), not the
-      // Vite dev server. Each start/restart rebuilds first (~30 s), so restarting always
-      // serves the latest code. For hot-reload while coding, run `npm run dev` separately.
+      // Serves the prebuilt dist/ with serve-dist.mjs (Node built-ins only), so the server
+      // needs neither the frontend source nor its node_modules. dist/ is built elsewhere and
+      // uploaded by my-app-pt1/scripts/deploy-dist.sh, which then restarts this app
+      // (serve-dist.mjs loads dist/ into memory at startup). To build on this machine
+      // instead, run `npm run build` in my-app-pt1 and `pm2 restart frontend`.
       name: 'frontend',
-      script: 'npm',
-      args: 'run serve:prod',
+      script: 'serve-dist.mjs',
+      args: '--host 103.200.219.246 --port 5173',
       cwd: './my-app-pt1',
     },
   ],
